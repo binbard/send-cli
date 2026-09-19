@@ -19,6 +19,7 @@ type Config struct {
 
 type TelegramConfig struct {
 	BotToken                string   `json:"bot_token,omitempty"`
+	BotTokenProtected       string   `json:"bot_token_protected,omitempty"`
 	Receiver                Receiver `json:"receiver"`
 	AutoDownload            bool     `json:"auto_download,omitempty"`
 	UpdateOffset            int64    `json:"update_offset,omitempty"`
@@ -82,6 +83,9 @@ func (s *Store) Load() (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode %s: %w", s.path, err)
 	}
+	if err := loadProtectedToken(&cfg.Telegram); err != nil {
+		return Config{}, fmt.Errorf("decrypt Telegram bot token: %w", err)
+	}
 	if cfg.Version == 0 {
 		cfg.Version = currentVersion
 	}
@@ -93,6 +97,9 @@ func (s *Store) Load() (Config, error) {
 
 func (s *Store) Save(cfg Config) error {
 	cfg.Version = currentVersion
+	if err := prepareTokenForSave(&cfg.Telegram); err != nil {
+		return fmt.Errorf("protect Telegram bot token: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}

@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -24,6 +27,15 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if got.Version != currentVersion || got.Telegram.Receiver.ID != 42 || got.Telegram.BotToken != "secret" || got.Telegram.UpdateOffset != 123 || !got.Telegram.UpdateOffsetInitialized {
 		t.Fatalf("unexpected config: %#v", got)
+	}
+	if runtime.GOOS == "windows" {
+		data, err := os.ReadFile(store.Path())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(data, []byte("secret")) || !bytes.Contains(data, []byte("bot_token_protected")) {
+			t.Fatalf("Windows config did not protect token: %s", data)
+		}
 	}
 }
 

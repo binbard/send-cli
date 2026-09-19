@@ -69,9 +69,10 @@ file sizes before transferring. Telegram's self-hosted local Bot API server has
 different limits, but a custom Bot API endpoint is not yet configurable here.
 
 Bot tokens are sensitive. They are stored beneath the OS user configuration
-directory in `send-cli`, with user-only permissions where the OS supports them.
-`send tg --logout` removes the local Telegram bot token and receiver
-configuration.
+directory in `send-cli`. Windows protects the token with current-user DPAPI;
+Linux and macOS use user-only file permissions. Existing Windows plaintext
+tokens are migrated the next time the configuration is saved. `send tg
+--logout` removes the local Telegram bot token and receiver configuration.
 
 ## Build and test
 
