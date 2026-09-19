@@ -1,0 +1,44 @@
+# Build outputs
+/bin/
+/build/
+/dist/
+/send
+/send.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go test, coverage, and profiling artifacts
+*.test
+*.out
+coverage.*
+*.prof
+
+# Local Go workspace files
+go.work
+go.work.sum
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+/config.json
+/telegram-session.json
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.code-workspace
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+.delta/
