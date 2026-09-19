@@ -3,7 +3,7 @@
 `send` is a Windows-first command-line tool for sending and receiving Telegram
 messages and files with as little ceremony as possible.
 
-Telegram, HTTP, and ADB are implemented. WhatsApp, SSH, and LAN remain visible
+Telegram, HTTP, ADB, and SSH are implemented. WhatsApp and LAN remain visible
 in `send --help` and `send list` while their backends are being completed.
 
 ## Commands
@@ -15,8 +15,16 @@ send tg -m "Everything is good."
 send tg
 send http https://example.test/upload report.pdf -m "Monthly report"
 send adb report.pdf --to /sdcard/Download/
+send ssh user@example.com report.pdf --to /srv/drop/
 send list
 ```
+
+## SSH
+
+`send ssh <user@host> [files...]` transfers regular files with the installed
+OpenSSH `scp` client. It uses agent/key authentication in batch mode. Configure
+`--identity`, `--port`, repeatable `--ssh-option`, `--to`, or `--scp-path` as
+needed. Remote target and destination values reject shell metacharacters.
 
 ## ADB
 

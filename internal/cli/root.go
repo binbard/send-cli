@@ -23,6 +23,7 @@ import (
 	"send-cli/internal/config"
 	"send-cli/internal/httpchannel"
 	"send-cli/internal/lockfile"
+	"send-cli/internal/sshchannel"
 	tgservice "send-cli/internal/telegram"
 	"send-cli/internal/ui"
 )
@@ -46,6 +47,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newTelegramCommand())
 	root.AddCommand(newHTTPCommand())
 	root.AddCommand(newADBCommand())
+	root.AddCommand(newSSHCommand())
 	root.AddCommand(newListCommand())
 	for _, channel := range []struct {
 		name    string
@@ -53,7 +55,6 @@ func newRootCommand() *cobra.Command {
 		summary string
 	}{
 		{name: "whatsapp", aliases: []string{"wa"}, summary: "Send with WhatsApp"},
-		{name: "ssh", summary: "Send over SSH"},
 		{name: "lan", summary: "Discover and send to peers on the LAN"},
 	} {
 		channel := channel
@@ -67,6 +68,39 @@ func newRootCommand() *cobra.Command {
 		})
 	}
 	return root
+}
+
+func newSSHCommand() *cobra.Command {
+	var (
+		destination string
+		port        int
+		identity    string
+		executable  string
+		options     []string
+	)
+	command := &cobra.Command{
+		Use:   "ssh <user@host> [files...]",
+		Short: "Send files over SSH with SCP",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			client := sshchannel.NewClient(executable)
+			result, err := client.Send(command.Context(), sshchannel.Request{
+				Target: args[0], Destination: destination, Files: args[1:], Port: port,
+				Identity: identity, Options: options,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(command.OutOrStdout(), "Sent %d file(s) to %s:%s.\n", result.Sent, args[0], destination)
+			return nil
+		},
+	}
+	command.Flags().StringVar(&destination, "to", sshchannel.DefaultDestination, "remote destination directory or path")
+	command.Flags().IntVarP(&port, "port", "p", 0, "SSH port")
+	command.Flags().StringVarP(&identity, "identity", "i", "", "SSH private key path")
+	command.Flags().StringVar(&executable, "scp-path", "scp", "path to the scp executable")
+	command.Flags().StringArrayVarP(&options, "ssh-option", "o", nil, "OpenSSH option in Key=Value form (repeatable)")
+	return command
 }
 
 func newADBCommand() *cobra.Command {
@@ -329,7 +363,7 @@ func newListCommand() *cobra.Command {
 			fmt.Fprintf(table, "telegram\ttg\t%s\t%s\n", status, receiver)
 			fmt.Fprintln(table, "whatsapp\twa\tnot implemented\t—")
 			fmt.Fprintln(table, "adb\t—\tready\tconnected device")
-			fmt.Fprintln(table, "ssh\t—\tnot implemented\t—")
+			fmt.Fprintln(table, "ssh\t—\tready\tuser@host required")
 			fmt.Fprintln(table, "http\t—\tready\tURL required")
 			fmt.Fprintln(table, "lan\t—\tnot implemented\t—")
 			return table.Flush()
