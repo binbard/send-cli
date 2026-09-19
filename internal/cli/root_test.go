@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -17,6 +20,27 @@ func TestHelpIncludesAllChannels(t *testing.T) {
 		if !strings.Contains(output.String(), name) {
 			t.Errorf("help does not mention %q", name)
 		}
+	}
+}
+
+func TestHTTPCommand(t *testing.T) {
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	command := newRootCommand()
+	var output strings.Builder
+	command.SetOut(&output)
+	command.SetArgs([]string{"http", server.URL, "-m", "hello"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if gotBody != "hello" || !strings.Contains(output.String(), "202 Accepted") {
+		t.Fatalf("body=%q output=%q", gotBody, output.String())
 	}
 }
 

@@ -3,9 +3,8 @@
 `send` is a Windows-first command-line tool for sending and receiving Telegram
 messages and files with as little ceremony as possible.
 
-Telegram is implemented. WhatsApp, ADB, SSH, HTTP, and LAN are intentionally
-visible in `send --help` and `send list`, but currently return a clear
-“not implemented” error.
+Telegram and HTTP are implemented. WhatsApp, ADB, SSH, and LAN remain visible
+in `send --help` and `send list` while their backends are being completed.
 
 ## Commands
 
@@ -14,8 +13,16 @@ send telegram file3.html
 send tg file3.html file32.html
 send tg -m "Everything is good."
 send tg
+send http https://example.test/upload report.pdf -m "Monthly report"
 send list
 ```
+
+## HTTP
+
+`send http <url> [files...]` sends a plain UTF-8 request body when only `-m` is
+provided. With files, it streams `multipart/form-data` containing a `message`
+field and repeated `files` parts. Use `--method`, repeatable `-H/--header`, and
+`--timeout` to customize the request.
 
 Two or more compatible photos/videos are sent as Telegram media albums in
 ordered groups of up to 10. Documents and unsupported mixed batches are sent

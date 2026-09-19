@@ -8,16 +8,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"send-cli/internal/config"
+	"send-cli/internal/httpchannel"
 	"send-cli/internal/lockfile"
 	tgservice "send-cli/internal/telegram"
 	"send-cli/internal/ui"
@@ -40,6 +43,7 @@ func newRootCommand() *cobra.Command {
 		Version:       version,
 	}
 	root.AddCommand(newTelegramCommand())
+	root.AddCommand(newHTTPCommand())
 	root.AddCommand(newListCommand())
 	for _, channel := range []struct {
 		name    string
@@ -49,7 +53,6 @@ func newRootCommand() *cobra.Command {
 		{name: "whatsapp", aliases: []string{"wa"}, summary: "Send with WhatsApp"},
 		{name: "adb", summary: "Send to an Android device with ADB"},
 		{name: "ssh", summary: "Send over SSH"},
-		{name: "http", summary: "Send over HTTP"},
 		{name: "lan", summary: "Discover and send to peers on the LAN"},
 	} {
 		channel := channel
@@ -63,6 +66,36 @@ func newRootCommand() *cobra.Command {
 		})
 	}
 	return root
+}
+
+func newHTTPCommand() *cobra.Command {
+	var (
+		message string
+		method  string
+		headers []string
+		timeout time.Duration
+	)
+	command := &cobra.Command{
+		Use:   "http <url> [files...]",
+		Short: "Send files or a message to an HTTP endpoint",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			result, err := httpchannel.Send(command.Context(), httpchannel.Request{
+				URL: args[0], Method: method, Message: message, Files: args[1:],
+				Headers: headers, Timeout: timeout,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(command.OutOrStdout(), "HTTP %s succeeded (%s).\n", strings.ToUpper(method), result.Status)
+			return nil
+		},
+	}
+	command.Flags().StringVarP(&message, "message", "m", "", "message body or multipart message field")
+	command.Flags().StringVar(&method, "method", http.MethodPost, "HTTP method")
+	command.Flags().StringArrayVarP(&headers, "header", "H", nil, "request header in 'Name: value' form (repeatable)")
+	command.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "request timeout")
+	return command
 }
 
 func newTelegramCommand() *cobra.Command {
@@ -254,7 +287,7 @@ func newListCommand() *cobra.Command {
 			fmt.Fprintln(table, "whatsapp\twa\tnot implemented\t—")
 			fmt.Fprintln(table, "adb\t—\tnot implemented\t—")
 			fmt.Fprintln(table, "ssh\t—\tnot implemented\t—")
-			fmt.Fprintln(table, "http\t—\tnot implemented\t—")
+			fmt.Fprintln(table, "http\t—\tready\tURL required")
 			fmt.Fprintln(table, "lan\t—\tnot implemented\t—")
 			return table.Flush()
 		},
