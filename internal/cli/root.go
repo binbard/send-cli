@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"send-cli/internal/adbchannel"
 	"send-cli/internal/config"
 	"send-cli/internal/httpchannel"
 	"send-cli/internal/lockfile"
@@ -44,6 +45,7 @@ func newRootCommand() *cobra.Command {
 	}
 	root.AddCommand(newTelegramCommand())
 	root.AddCommand(newHTTPCommand())
+	root.AddCommand(newADBCommand())
 	root.AddCommand(newListCommand())
 	for _, channel := range []struct {
 		name    string
@@ -51,7 +53,6 @@ func newRootCommand() *cobra.Command {
 		summary string
 	}{
 		{name: "whatsapp", aliases: []string{"wa"}, summary: "Send with WhatsApp"},
-		{name: "adb", summary: "Send to an Android device with ADB"},
 		{name: "ssh", summary: "Send over SSH"},
 		{name: "lan", summary: "Discover and send to peers on the LAN"},
 	} {
@@ -66,6 +67,48 @@ func newRootCommand() *cobra.Command {
 		})
 	}
 	return root
+}
+
+func newADBCommand() *cobra.Command {
+	var (
+		serial      string
+		destination string
+		executable  string
+		list        bool
+	)
+	command := &cobra.Command{
+		Use:   "adb [files...]",
+		Short: "Send files to an Android device with ADB",
+		Args:  cobra.ArbitraryArgs,
+		RunE: func(command *cobra.Command, args []string) error {
+			client := adbchannel.NewClient(executable)
+			if list {
+				devices, err := client.ListDevices(command.Context())
+				if err != nil {
+					return err
+				}
+				if len(devices) == 0 {
+					fmt.Fprintln(command.OutOrStdout(), "No ADB devices found.")
+					return nil
+				}
+				for _, device := range devices {
+					fmt.Fprintf(command.OutOrStdout(), "%s\t%s\t%s\n", device.Serial, device.State, device.Info)
+				}
+				return nil
+			}
+			result, err := client.Send(command.Context(), serial, destination, args)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(command.OutOrStdout(), "Sent %d file(s) to ADB device %s.\n", result.Sent, result.Serial)
+			return nil
+		},
+	}
+	command.Flags().StringVarP(&serial, "serial", "s", "", "ADB device serial (required when multiple devices are connected)")
+	command.Flags().StringVar(&destination, "to", adbchannel.DefaultDestination, "destination directory or path on the device")
+	command.Flags().StringVar(&executable, "adb-path", "adb", "path to the adb executable")
+	command.Flags().BoolVar(&list, "list", false, "list connected ADB devices")
+	return command
 }
 
 func newHTTPCommand() *cobra.Command {
@@ -285,7 +328,7 @@ func newListCommand() *cobra.Command {
 			fmt.Fprintln(table, "CHANNEL\tALIASES\tSTATUS\tDEFAULT RECEIVER")
 			fmt.Fprintf(table, "telegram\ttg\t%s\t%s\n", status, receiver)
 			fmt.Fprintln(table, "whatsapp\twa\tnot implemented\t—")
-			fmt.Fprintln(table, "adb\t—\tnot implemented\t—")
+			fmt.Fprintln(table, "adb\t—\tready\tconnected device")
 			fmt.Fprintln(table, "ssh\t—\tnot implemented\t—")
 			fmt.Fprintln(table, "http\t—\tready\tURL required")
 			fmt.Fprintln(table, "lan\t—\tnot implemented\t—")

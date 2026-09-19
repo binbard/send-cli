@@ -3,7 +3,7 @@
 `send` is a Windows-first command-line tool for sending and receiving Telegram
 messages and files with as little ceremony as possible.
 
-Telegram and HTTP are implemented. WhatsApp, ADB, SSH, and LAN remain visible
+Telegram, HTTP, and ADB are implemented. WhatsApp, SSH, and LAN remain visible
 in `send --help` and `send list` while their backends are being completed.
 
 ## Commands
@@ -14,8 +14,16 @@ send tg file3.html file32.html
 send tg -m "Everything is good."
 send tg
 send http https://example.test/upload report.pdf -m "Monthly report"
+send adb report.pdf --to /sdcard/Download/
 send list
 ```
+
+## ADB
+
+`send adb [files...]` pushes files to `/sdcard/Download/` on the single
+authorized Android device. Use `send adb --list`, `--serial`, `--to`, or
+`--adb-path` when device selection or tooling differs. ADB must already be
+installed and USB or wireless debugging must be authorized.
 
 ## HTTP
 
