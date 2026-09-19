@@ -21,7 +21,13 @@ send wa report.pdf --to 15551234567 -m "Monthly report"
 send lan serve --directory .
 send lan report.pdf --to workstation --token RECEIVER_TOKEN
 send list
+send doctor
 ```
+
+`send doctor` reports Telegram and WhatsApp setup, checks whether `adb` and
+`scp` are available, and confirms the built-in HTTP and LAN channels. It never
+prints access tokens. Use `send doctor --strict` in setup scripts when missing
+credentials or dependencies should produce a failure exit code.
 
 ## LAN
 

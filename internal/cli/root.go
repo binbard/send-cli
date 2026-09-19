@@ -53,6 +53,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newWhatsAppCommand())
 	root.AddCommand(newLANCommand())
 	root.AddCommand(newListCommand())
+	root.AddCommand(newDoctorCommand())
 	return root
 }
 
