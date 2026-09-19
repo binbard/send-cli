@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test
+        run: |
+          go test ./...
+          go vet ./...
+      - name: Build archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist package
+          version="${GITHUB_REF_NAME#v}"
+          flags="-s -w -X send-cli/internal/cli.version=${version}"
+
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="$flags" -o package/send.exe ./cmd/send
+          (cd package && zip -q ../dist/send-${version}-windows-amd64.zip send.exe)
+          rm package/send.exe
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$flags" -o package/send ./cmd/send
+          tar -C package -czf "dist/send-${version}-linux-amd64.tar.gz" send
+          rm package/send
+
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="$flags" -o package/send ./cmd/send
+          tar -C package -czf "dist/send-${version}-darwin-amd64.tar.gz" send
+          rm package/send
+
+          (cd dist && sha256sum *.zip *.tar.gz > checksums.txt)
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes

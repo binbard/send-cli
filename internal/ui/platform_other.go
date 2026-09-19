@@ -2,7 +2,14 @@
 
 package ui
 
-import "errors"
+import (
+	"errors"
+	"os"
+)
+
+func prepareTerminalOutput(*os.File) (func(), error) {
+	return func() {}, nil
+}
 
 func pickFiles() ([]selectedFile, error) {
 	return nil, errors.New("native file picker is currently available on Windows; paste a file path instead")

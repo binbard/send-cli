@@ -9,7 +9,22 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
+
+func prepareTerminalOutput(output *os.File) (func(), error) {
+	handle := windows.Handle(output.Fd())
+	var original uint32
+	if err := windows.GetConsoleMode(handle, &original); err != nil {
+		return nil, err
+	}
+	mode := original | windows.ENABLE_PROCESSED_OUTPUT | windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING
+	if err := windows.SetConsoleMode(handle, mode); err != nil {
+		return nil, err
+	}
+	return func() { _ = windows.SetConsoleMode(handle, original) }, nil
+}
 
 func pickFiles() ([]selectedFile, error) {
 	script := `

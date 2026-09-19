@@ -1,6 +1,36 @@
 package telegram
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+type TransferDirection string
+
+const (
+	TransferUpload   TransferDirection = "upload"
+	TransferDownload TransferDirection = "download"
+)
+
+type TransferProgress struct {
+	Direction   TransferDirection
+	Name        string
+	Transferred int64
+	Total       int64
+	Elapsed     time.Duration
+}
+
+type progressContextKey struct{}
+
+func WithTransferProgress(ctx context.Context, handler func(TransferProgress)) context.Context {
+	return context.WithValue(ctx, progressContextKey{}, handler)
+}
+
+func reportTransferProgress(ctx context.Context, progress TransferProgress) {
+	if handler, ok := ctx.Value(progressContextKey{}).(func(TransferProgress)); ok && handler != nil {
+		handler(progress)
+	}
+}
 
 type RemoteFile struct {
 	Name     string

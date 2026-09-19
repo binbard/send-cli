@@ -24,7 +24,6 @@ go.work.sum
 .env.*
 !.env.example
 /config.json
-/telegram-session.json
 
 # Logs and temporary files
 *.log

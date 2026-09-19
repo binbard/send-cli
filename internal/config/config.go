@@ -17,32 +17,20 @@ type Config struct {
 }
 
 type TelegramConfig struct {
-	Mode         string   `json:"mode,omitempty"`
 	BotToken     string   `json:"bot_token,omitempty"`
 	Receiver     Receiver `json:"receiver"`
 	AutoDownload bool     `json:"auto_download,omitempty"`
 }
 
 type Receiver struct {
-	Kind       string `json:"kind,omitempty"`
-	ID         int64  `json:"id,omitempty"`
-	AccessHash int64  `json:"access_hash,omitempty"`
-	Title      string `json:"title,omitempty"`
-	Username   string `json:"username,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	ID       int64  `json:"id,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Username string `json:"username,omitempty"`
 }
 
 func (t TelegramConfig) Ready() bool {
-	if t.Receiver.ID == 0 {
-		return false
-	}
-	switch t.Mode {
-	case "bot":
-		return t.BotToken != ""
-	case "user":
-		return t.Receiver.Kind != ""
-	default:
-		return false
-	}
+	return t.BotToken != "" && t.Receiver.ID != 0
 }
 
 type Store struct {
@@ -63,10 +51,6 @@ func NewStoreAt(path string) *Store {
 
 func (s *Store) Path() string {
 	return s.path
-}
-
-func (s *Store) SessionPath() string {
-	return filepath.Join(filepath.Dir(s.path), "telegram-session.json")
 }
 
 func (s *Store) Load() (Config, error) {

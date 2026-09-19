@@ -17,7 +17,8 @@ send tg
 send list
 ```
 
-`send tg` opens the interactive interface:
+`send tg` opens a lightweight line-oriented terminal chat without a full-screen
+TUI or animation framework:
 
 - `Enter` sends.
 - `Shift+Enter`, `Ctrl+J`, `Ctrl+\`, or `Alt+Enter` inserts a newline.
@@ -26,6 +27,9 @@ send list
   clipboard when the terminal passes that key to the application.
 - Pasted ordinary text is inserted into the message. Pasted existing paths are
   attached.
+- Arrow keys, Home, End, Delete, and Backspace edit the draft. With an empty
+  draft, Backspace removes the most recently added attachment. `Ctrl+U` clears
+  the draft and all attachments.
 - `Ctrl+C` exits.
 
 Incoming files are offered for download into the current directory. Press `y`
@@ -35,41 +39,30 @@ name, or `N` to skip. `send tg --ask-downloads` restores prompting.
 
 ## Telegram setup
 
-The first Telegram command, or `send tg --setup`, offers two modes.
+The first Telegram command, or `send tg --setup`, asks for a
+[BotFather](https://t.me/BotFather) bot token. Setup verifies the token and asks
+you to send a unique marker to the bot in a DM or group. That chat becomes the
+fixed receiver. Telegram bots cannot send to themselves or initiate a
+conversation with a user.
 
-### User account
+In groups, BotFather privacy mode can hide ordinary messages from the bot even
+though the setup marker works. To receive normal group messages, make the bot
+an administrator or use BotFather's `/setprivacy` command to disable privacy
+for that bot. Channels require the bot to have permission to read and post.
 
-User mode uses [`gotd/td`](https://github.com/gotd/td) and supports Telegram's
-phone code and 2FA login. Like Telegram Web, a release build must contain the
-project's own Telegram application ID and hash. Inject them when building:
+Only one interactive `send tg` process can receive updates for the configured
+bot at a time. A local process lock prevents two instances from competing;
+one-shot message and file sends can still run concurrently.
 
-```powershell
-$env:SEND_TELEGRAM_API_ID = "123456"
-$env:SEND_TELEGRAM_API_HASH = "your-app-hash"
-go build -o send.exe ./cmd/send
-```
+The official hosted Bot API currently limits multipart uploads to 10 MiB for
+photos and 50 MiB for other files, and downloads to 20 MiB. `send` checks known
+file sizes before transferring. Telegram's self-hosted local Bot API server has
+different limits, but a custom Bot API endpoint is not yet configurable here.
 
-Official release builds can inject them with linker values instead:
-
-```powershell
-go build -ldflags "-X send-cli/internal/telegram.BuiltinAPIID=123456 -X send-cli/internal/telegram.BuiltinAPIHash=your-app-hash" -o send.exe ./cmd/send
-```
-
-Do not commit an API hash. After login, setup displays a unique marker. Send it
-from any of your Telegram clients to the DM, group, or channel that should
-become the default receiver.
-
-### Bot
-
-Bot mode needs only a BotFather token. Setup verifies the token and asks you to
-send a unique marker to the bot in a DM or group. That chat becomes the fixed
-receiver. Telegram bots cannot send to themselves or initiate a conversation
-with a user.
-
-Bot tokens and user sessions are sensitive. They are stored beneath the OS user
-configuration directory in `send-cli`, with user-only permissions where the OS
-supports them. `send tg --logout` removes the local Telegram configuration and
-user session.
+Bot tokens are sensitive. They are stored beneath the OS user configuration
+directory in `send-cli`, with user-only permissions where the OS supports them.
+`send tg --logout` removes the local Telegram bot token and receiver
+configuration.
 
 ## Build and test
 
@@ -77,5 +70,9 @@ Go 1.24 or newer is required.
 
 ```powershell
 go test ./...
-go build -o bin/send.exe ./cmd/send
+go build -trimpath -ldflags="-s -w" -o bin/send.exe ./cmd/send
 ```
+
+Push a tag such as `v0.1.0` to run the release workflow. It publishes stripped
+Windows, Linux, and macOS amd64 archives plus SHA-256 checksums; the tag version
+is embedded in `send --version`.

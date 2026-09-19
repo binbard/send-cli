@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -74,7 +75,14 @@ func (s *botSession) Send(ctx context.Context, text string, files []string) erro
 			fileCaption = caption
 		}
 		if err := s.client.sendFile(ctx, s.chatID, path, fileCaption); err != nil {
-			return fmt.Errorf("send %s: %w", filepath.Base(path), err)
+			return fmt.Errorf(
+				"sent %d of %d files; %s failed; %d not attempted: %w",
+				i,
+				len(files),
+				filepath.Base(path),
+				len(files)-i-1,
+				err,
+			)
 		}
 	}
 	return nil
@@ -82,6 +90,7 @@ func (s *botSession) Send(ctx context.Context, text string, files []string) erro
 
 func (s *botSession) poll(ctx context.Context) {
 	offset := int64(0)
+	failures := 0
 	initial, err := s.client.getUpdates(ctx, 0, 0)
 	if err == nil {
 		for _, update := range initial {
@@ -101,9 +110,13 @@ func (s *botSession) poll(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			}
-			time.Sleep(time.Second)
+			if !waitForRetry(ctx, pollRetryDelay(failures)) {
+				return
+			}
+			failures++
 			continue
 		}
+		failures = 0
 		for _, update := range updates {
 			offset = update.UpdateID + 1
 			message := update.message()
@@ -129,8 +142,8 @@ func SetupBot(ctx context.Context, token, marker string, output io.Writer) (conf
 	if err := client.deleteWebhook(ctx); err != nil {
 		return config.TelegramConfig{}, err
 	}
-	fmt.Fprintf(output, "Logged in as @%s.\n", me.Username)
-	fmt.Fprintf(output, "Open a DM with this bot (or add it to a group) and send:\n\n  %s\n\nWaiting for that message...\n", marker)
+	fmt.Fprintf(output, "Connected as @%s.\n", me.Username)
+	fmt.Fprintf(output, "Open a DM with this bot (or add it to a group or channel) and send:\n\n  %s\n\nWaiting for that message...\n", marker)
 
 	offset := int64(0)
 	for {
@@ -146,8 +159,10 @@ func SetupBot(ctx context.Context, token, marker string, output io.Writer) (conf
 			}
 			title := msg.Chat.displayName()
 			fmt.Fprintf(output, "Selected %s (chat %d).\n", title, msg.Chat.ID)
+			if msg.Chat.Type == "group" || msg.Chat.Type == "supergroup" {
+				fmt.Fprintln(output, "Group privacy note: to receive ordinary group messages, make the bot an administrator or disable privacy for it with BotFather /setprivacy.")
+			}
 			return config.TelegramConfig{
-				Mode:     "bot",
 				BotToken: token,
 				Receiver: config.Receiver{
 					Kind:     "bot_chat",
@@ -161,23 +176,80 @@ func SetupBot(ctx context.Context, token, marker string, output io.Writer) (conf
 }
 
 type botClient struct {
-	token   string
-	baseURL string
-	http    *http.Client
+	token         string
+	baseURL       string
+	http          *http.Client
+	retryAttempts int
+	retryBase     time.Duration
 }
 
 func newBotClient(token string) *botClient {
 	return &botClient{
-		token:   token,
-		baseURL: "https://api.telegram.org",
-		http:    &http.Client{},
+		token:         token,
+		baseURL:       "https://api.telegram.org",
+		http:          &http.Client{},
+		retryAttempts: 4,
+		retryBase:     500 * time.Millisecond,
 	}
 }
 
 type botResponse[T any] struct {
-	OK          bool   `json:"ok"`
-	Result      T      `json:"result"`
-	Description string `json:"description"`
+	OK          bool                  `json:"ok"`
+	Result      T                     `json:"result"`
+	ErrorCode   int                   `json:"error_code"`
+	Description string                `json:"description"`
+	Parameters  botResponseParameters `json:"parameters"`
+}
+
+type botResponseParameters struct {
+	RetryAfter int `json:"retry_after"`
+}
+
+type botAPIError struct {
+	code        int
+	description string
+	retryAfter  time.Duration
+}
+
+func (e *botAPIError) Error() string {
+	switch e.code {
+	case http.StatusUnauthorized:
+		return "Telegram bot token is invalid or revoked: " + e.description
+	case http.StatusForbidden:
+		return "Telegram denied access; the bot may be blocked or removed from the selected chat: " + e.description
+	case http.StatusConflict:
+		return "Telegram update polling conflict; another process or webhook may be receiving this bot's updates: " + e.description
+	case http.StatusTooManyRequests:
+		return "Telegram rate limit: " + e.description
+	default:
+		if e.description != "" {
+			return e.description
+		}
+		return fmt.Sprintf("Telegram API error %d", e.code)
+	}
+}
+
+func (r *botResponse[T]) responseError() error {
+	if r.OK {
+		return nil
+	}
+	return &botAPIError{
+		code:        r.ErrorCode,
+		description: r.Description,
+		retryAfter:  time.Duration(r.Parameters.RetryAfter) * time.Second,
+	}
+}
+
+type responseWithError interface {
+	responseError() error
+}
+
+type httpStatusError struct {
+	code int
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("Telegram returned HTTP %d", e.code)
 }
 
 type botUser struct {
@@ -257,6 +329,22 @@ func (c *botClient) endpoint(method string) string {
 }
 
 func (c *botClient) doForm(ctx context.Context, method string, values url.Values, out any) error {
+	for attempt := 0; ; attempt++ {
+		err := c.doFormOnce(ctx, method, values, out)
+		if err == nil {
+			return nil
+		}
+		delay, retry := c.retryDelay(err, attempt)
+		if !retry || attempt+1 >= c.retryAttemptLimit() {
+			return err
+		}
+		if !waitForRetry(ctx, delay) {
+			return ctx.Err()
+		}
+	}
+}
+
+func (c *botClient) doFormOnce(ctx context.Context, method string, values url.Values, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(method), strings.NewReader(values.Encode()))
 	if err != nil {
 		return err
@@ -267,19 +355,95 @@ func (c *botClient) doForm(ctx context.Context, method string, values url.Values
 		return err
 	}
 	defer resp.Body.Close()
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(out); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return &httpStatusError{code: resp.StatusCode}
+		}
 		return fmt.Errorf("decode Telegram response: %w", err)
 	}
+	if response, ok := out.(responseWithError); ok {
+		if err := response.responseError(); err != nil {
+			return err
+		}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &httpStatusError{code: resp.StatusCode}
+	}
 	return nil
+}
+
+func (c *botClient) retryAttemptLimit() int {
+	if c.retryAttempts < 1 {
+		return 1
+	}
+	return c.retryAttempts
+}
+
+func (c *botClient) retryDelay(err error, attempt int) (time.Duration, bool) {
+	var apiErr *botAPIError
+	if errors.As(err, &apiErr) {
+		if apiErr.code == http.StatusTooManyRequests {
+			if apiErr.retryAfter > 0 {
+				return apiErr.retryAfter, true
+			}
+			return exponentialDelay(c.retryBase, attempt, 30*time.Second), true
+		}
+		if apiErr.code >= 500 {
+			return exponentialDelay(c.retryBase, attempt, 30*time.Second), true
+		}
+		return 0, false
+	}
+	var statusErr *httpStatusError
+	if errors.As(err, &statusErr) && statusErr.code >= 500 {
+		return exponentialDelay(c.retryBase, attempt, 30*time.Second), true
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) {
+		return exponentialDelay(c.retryBase, attempt, 30*time.Second), true
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return exponentialDelay(c.retryBase, attempt, 30*time.Second), true
+	}
+	return 0, false
+}
+
+func exponentialDelay(base time.Duration, attempt int, maximum time.Duration) time.Duration {
+	if base <= 0 {
+		base = time.Millisecond
+	}
+	delay := base
+	for index := 0; index < attempt && delay < maximum/2; index++ {
+		delay *= 2
+	}
+	if delay > maximum {
+		return maximum
+	}
+	return delay
+}
+
+func pollRetryDelay(failures int) time.Duration {
+	return exponentialDelay(time.Second, failures, 30*time.Second)
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (c *botClient) getMe(ctx context.Context) (botUser, error) {
 	var response botResponse[botUser]
 	if err := c.doForm(ctx, "getMe", nil, &response); err != nil {
 		return botUser{}, err
-	}
-	if !response.OK {
-		return botUser{}, errors.New(response.Description)
 	}
 	return response.Result, nil
 }
@@ -288,9 +452,6 @@ func (c *botClient) deleteWebhook(ctx context.Context) error {
 	var response botResponse[bool]
 	if err := c.doForm(ctx, "deleteWebhook", url.Values{"drop_pending_updates": {"false"}}, &response); err != nil {
 		return err
-	}
-	if !response.OK {
-		return errors.New(response.Description)
 	}
 	return nil
 }
@@ -305,9 +466,6 @@ func (c *botClient) getUpdates(ctx context.Context, offset int64, timeout int) (
 	if err := c.doForm(ctx, "getUpdates", values, &response); err != nil {
 		return nil, err
 	}
-	if !response.OK {
-		return nil, errors.New(response.Description)
-	}
 	return response.Result, nil
 }
 
@@ -320,19 +478,37 @@ func (c *botClient) sendMessage(ctx context.Context, chatID int64, text string) 
 	if err != nil {
 		return err
 	}
-	if !response.OK {
-		return errors.New(response.Description)
-	}
 	return nil
 }
 
 func (c *botClient) sendFile(ctx context.Context, chatID int64, path, caption string) error {
+	for attempt := 0; ; attempt++ {
+		err := c.sendFileOnce(ctx, chatID, path, caption)
+		if err == nil {
+			return nil
+		}
+		delay, retry := c.retryDelay(err, attempt)
+		if !retry || attempt+1 >= c.retryAttemptLimit() {
+			return err
+		}
+		if !waitForRetry(ctx, delay) {
+			return ctx.Err()
+		}
+	}
+}
+
+func (c *botClient) sendFileOnce(ctx context.Context, chatID int64, path, caption string) error {
 	method, field := mediaMethod(path)
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	upload := newProgressReader(ctx, file, TransferUpload, filepath.Base(path), info.Size())
 
 	reader, pipe := io.Pipe()
 	writer := multipart.NewWriter(pipe)
@@ -348,7 +524,7 @@ func (c *botClient) sendFile(ctx context.Context, chatID int64, path, caption st
 			var part io.Writer
 			part, writeErr = writer.CreateFormFile(field, filepath.Base(path))
 			if writeErr == nil {
-				_, writeErr = io.Copy(part, file)
+				_, writeErr = io.Copy(part, upload)
 			}
 		}
 		if closeErr := writer.Close(); writeErr == nil {
@@ -375,12 +551,22 @@ func (c *botClient) sendFile(ctx context.Context, chatID int64, path, caption st
 	if err := <-writeResult; err != nil {
 		return err
 	}
-	var response botResponse[json.RawMessage]
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&response); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
 		return err
 	}
-	if !response.OK {
-		return errors.New(response.Description)
+	var response botResponse[json.RawMessage]
+	if err := json.Unmarshal(body, &response); err != nil {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return &httpStatusError{code: resp.StatusCode}
+		}
+		return fmt.Errorf("decode Telegram response: %w", err)
+	}
+	if err := response.responseError(); err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &httpStatusError{code: resp.StatusCode}
 	}
 	return nil
 }
@@ -421,10 +607,18 @@ func (c *botClient) eventFromMessage(msg *botMessage) Event {
 			name = fmt.Sprintf("telegram-%s", time.Unix(msg.Date, 0).Format("20060102-150405"))
 		}
 		fileID := file.FileID
+		fileSize := file.FileSize
 		event.File = &RemoteFile{
 			Name: name,
 			Size: file.FileSize,
 			Download: func(ctx context.Context, path string) error {
+				if fileSize > officialDownloadLimit {
+					return fmt.Errorf(
+						"%s is %.1f MiB; the official Telegram Bot API can download files only up to 20 MiB (a self-hosted local Bot API server has different limits)",
+						filepath.Base(name),
+						float64(fileSize)/(1024*1024),
+					)
+				}
 				return c.download(ctx, fileID, path)
 			},
 		}
@@ -437,10 +631,23 @@ func (c *botClient) download(ctx context.Context, fileID, destination string) er
 	if err := c.doForm(ctx, "getFile", url.Values{"file_id": {fileID}}, &response); err != nil {
 		return err
 	}
-	if !response.OK {
-		return errors.New(response.Description)
-	}
 	downloadURL := c.baseURL + "/file/bot" + c.token + "/" + response.Result.FilePath
+	for attempt := 0; ; attempt++ {
+		err := c.downloadOnce(ctx, downloadURL, destination, response.Result.FileSize)
+		if err == nil {
+			return nil
+		}
+		delay, retry := c.retryDelay(err, attempt)
+		if !retry || attempt+1 >= c.retryAttemptLimit() {
+			return err
+		}
+		if !waitForRetry(ctx, delay) {
+			return ctx.Err()
+		}
+	}
+}
+
+func (c *botClient) downloadOnce(ctx context.Context, downloadURL, destination string, total int64) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return err
@@ -451,16 +658,68 @@ func (c *botClient) download(ctx context.Context, fileID, destination string) er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("download failed: %s", resp.Status)
+		return &httpStatusError{code: resp.StatusCode}
+	}
+	if total <= 0 {
+		total = resp.ContentLength
 	}
 	output, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(output, resp.Body)
+	name := filepath.Base(destination)
+	download := newProgressReader(ctx, resp.Body, TransferDownload, name, total)
+	_, copyErr := io.Copy(output, download)
 	closeErr := output.Close()
 	if copyErr != nil {
 		return copyErr
 	}
 	return closeErr
+}
+
+type progressReader struct {
+	ctx         context.Context
+	reader      io.Reader
+	direction   TransferDirection
+	name        string
+	total       int64
+	transferred int64
+	started     time.Time
+	lastReport  time.Time
+}
+
+func newProgressReader(ctx context.Context, reader io.Reader, direction TransferDirection, name string, total int64) *progressReader {
+	now := time.Now()
+	progress := &progressReader{
+		ctx:        ctx,
+		reader:     reader,
+		direction:  direction,
+		name:       name,
+		total:      total,
+		started:    now,
+		lastReport: now,
+	}
+	progress.report(now)
+	return progress
+}
+
+func (r *progressReader) Read(buffer []byte) (int, error) {
+	count, err := r.reader.Read(buffer)
+	r.transferred += int64(count)
+	now := time.Now()
+	if err != nil || now.Sub(r.lastReport) >= 200*time.Millisecond || r.total > 0 && r.transferred >= r.total {
+		r.report(now)
+		r.lastReport = now
+	}
+	return count, err
+}
+
+func (r *progressReader) report(now time.Time) {
+	reportTransferProgress(r.ctx, TransferProgress{
+		Direction:   r.direction,
+		Name:        r.name,
+		Transferred: r.transferred,
+		Total:       r.total,
+		Elapsed:     now.Sub(r.started),
+	})
 }

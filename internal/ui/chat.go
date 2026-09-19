@@ -1,18 +1,22 @@
 package ui
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/term"
 
 	tgservice "send-cli/internal/telegram"
 )
+
+const maxDraftRunes = 4096
 
 type Options struct {
 	Receiver        string
@@ -21,400 +25,500 @@ type Options struct {
 }
 
 func Run(ctx context.Context, session tgservice.Session, options Options) error {
-	input := textarea.New()
-	input.Placeholder = "Type a message..."
-	input.Prompt = "U> "
-	input.SetHeight(4)
-	input.SetWidth(78)
-	input.CharLimit = 4096
-	input.Focus()
+	restoreOutput, err := prepareTerminalOutput(os.Stdout)
+	if err != nil {
+		return fmt.Errorf("prepare terminal output: %w", err)
+	}
+	defer restoreOutput()
 
-	model := chatModel{
-		ctx:          ctx,
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return fmt.Errorf("enable terminal input: %w", err)
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	keys := make(chan inputEvent, 32)
+	results := make(chan any, 16)
+	console := &chatConsole{
+		ctx:          runCtx,
 		session:      session,
 		options:      options,
-		input:        input,
 		autoDownload: options.AutoDownload,
+		results:      results,
+		renderer:     newRenderer(os.Stdout),
 	}
-	program := tea.NewProgram(model, tea.WithContext(ctx))
-	final, err := program.Run()
-	if result, ok := final.(chatModel); ok {
-		result.removeTemporaryAttachments()
+
+	fmt.Fprint(os.Stdout, "\x1b[?2004h")
+	fmt.Fprintf(os.Stdout, "Telegram · %s · connected\r\n", safeTerminalText(options.Receiver))
+	fmt.Fprint(os.Stdout, "Enter send · Shift+Enter/Ctrl+J/Ctrl+\\/Alt+Enter newline · Ctrl+O attach · Ctrl+C exit\r\n\r\n")
+	console.renderer.draw(console)
+	go readInput(runCtx, os.Stdin, keys)
+	telegramEvents := session.Events()
+
+	defer func() {
+		cancel()
+		console.renderer.clear()
+		fmt.Fprint(os.Stdout, "\r\n\x1b[?2004l")
+		_ = term.Restore(int(os.Stdin.Fd()), oldState)
+		console.removeTemporaryAttachments()
+	}()
+
+	for {
+		select {
+		case <-runCtx.Done():
+			return nil
+		case key := <-keys:
+			if key.kind == inputQuit {
+				return nil
+			}
+			if key.kind == inputError {
+				if errors.Is(key.err, io.EOF) {
+					return nil
+				}
+				return fmt.Errorf("read terminal input: %w", key.err)
+			}
+			console.handleInput(key)
+		case event, ok := <-telegramEvents:
+			if !ok {
+				console.status = "Telegram connection closed"
+				telegramEvents = nil
+			} else {
+				console.handleTelegramEvent(event)
+			}
+		case result := <-results:
+			console.handleResult(result)
+		}
+		console.renderer.draw(console)
 	}
-	return err
 }
 
-type attachment struct {
-	selectedFile
-}
-
-type chatModel struct {
+type chatConsole struct {
 	ctx           context.Context
 	session       tgservice.Session
 	options       Options
-	input         textarea.Model
-	history       []string
-	attachments   []attachment
+	renderer      *renderer
+	results       chan any
+	draft         []rune
+	cursor        int
+	attachments   []selectedFile
 	status        string
 	sending       bool
+	picking       bool
 	autoDownload  bool
 	pending       *tgservice.RemoteFile
 	downloadQueue []*tgservice.RemoteFile
 	downloading   bool
 	collision     bool
 	renaming      bool
-	rename        string
-	width         int
-	height        int
+	rename        []rune
 }
 
-type eventMsg struct{ event tgservice.Event }
-type sendResultMsg struct{ err error }
-type pickResultMsg struct {
+type sendResult struct{ err error }
+type pickResult struct {
 	files []selectedFile
 	err   error
 }
-type downloadResultMsg struct {
+type downloadResult struct {
 	path string
 	err  error
 }
-type autoDownloadMsg struct{ err error }
+type autoDownloadResult struct{ err error }
+type transferProgressResult struct{ progress tgservice.TransferProgress }
 
-func (m chatModel) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, waitForEvent(m.session.Events()))
-}
+func (c *chatConsole) handleInput(key inputEvent) {
+	if c.pending != nil {
+		c.handleDownloadInput(key)
+		return
+	}
+	if c.sending {
+		return
+	}
+	switch key.kind {
+	case inputText, inputPaste, inputBackspace, inputDelete, inputLeft, inputRight, inputHome, inputEnd, inputNewline:
+		c.status = ""
+	}
 
-func waitForEvent(events <-chan tgservice.Event) tea.Cmd {
-	return func() tea.Msg {
-		event, ok := <-events
-		if !ok {
-			return eventMsg{event: tgservice.Event{Err: fmt.Errorf("Telegram connection closed")}}
+	switch key.kind {
+	case inputText:
+		c.appendDraft(key.text)
+	case inputPaste:
+		if files, ok := pastedFiles(key.text); ok {
+			for _, path := range files {
+				c.attachments = append(c.attachments, selectedFile{Path: path})
+			}
+			c.status = fmt.Sprintf("Attached %d pasted file(s)", len(files))
+		} else {
+			c.appendDraft(key.text)
 		}
-		return eventMsg{event: event}
+	case inputBackspace:
+		if c.cursor > 0 {
+			c.draft = append(c.draft[:c.cursor-1], c.draft[c.cursor:]...)
+			c.cursor--
+		} else if len(c.draft) == 0 && len(c.attachments) > 0 {
+			removed := c.attachments[len(c.attachments)-1]
+			c.attachments = c.attachments[:len(c.attachments)-1]
+			if removed.Temporary {
+				_ = os.Remove(removed.Path)
+			}
+			c.status = "Removed " + filepath.Base(removed.Path)
+		}
+	case inputDelete:
+		if c.cursor < len(c.draft) {
+			c.draft = append(c.draft[:c.cursor], c.draft[c.cursor+1:]...)
+		}
+	case inputLeft:
+		if c.cursor > 0 {
+			c.cursor--
+		}
+	case inputRight:
+		if c.cursor < len(c.draft) {
+			c.cursor++
+		}
+	case inputHome:
+		c.cursor = 0
+	case inputEnd:
+		c.cursor = len(c.draft)
+	case inputClear:
+		c.removeTemporaryAttachments()
+		c.draft = nil
+		c.cursor = 0
+		c.attachments = nil
+		c.status = "Draft cleared"
+	case inputNewline:
+		c.appendDraft("\n")
+	case inputEnter:
+		c.startSend()
+	case inputPick:
+		if c.picking {
+			return
+		}
+		c.picking = true
+		c.status = "Opening file picker..."
+		go func() {
+			files, err := pickFiles()
+			c.deliver(pickResult{files: files, err: err})
+		}()
+	case inputClipboard:
+		if c.picking {
+			return
+		}
+		c.picking = true
+		c.status = "Reading clipboard..."
+		go func() {
+			files, err := clipboardFiles()
+			if err == nil && len(files) == 0 {
+				err = errors.New("clipboard does not contain files or an image")
+			}
+			c.deliver(pickResult{files: files, err: err})
+		}()
 	}
 }
 
-func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		width := msg.Width - 4
-		if width < 20 {
-			width = 20
+func (c *chatConsole) appendDraft(value string) {
+	value = safeTerminalText(value)
+	available := maxDraftRunes - len(c.draft)
+	if available <= 0 {
+		c.status = "Message limit reached"
+		return
+	}
+	runes := []rune(value)
+	if len(runes) > available {
+		runes = runes[:available]
+		c.status = "Message truncated to 4096 characters"
+	}
+	originalLength := len(c.draft)
+	c.draft = append(c.draft, make([]rune, len(runes))...)
+	copy(c.draft[c.cursor+len(runes):], c.draft[c.cursor:originalLength])
+	copy(c.draft[c.cursor:], runes)
+	c.cursor += len(runes)
+}
+
+func (c *chatConsole) startSend() {
+	text := string(c.draft)
+	if strings.TrimSpace(text) == "" && len(c.attachments) == 0 {
+		return
+	}
+
+	files := make([]string, len(c.attachments))
+	for i, file := range c.attachments {
+		files[i] = file.Path
+	}
+	c.sending = true
+	c.status = "Sending..."
+	go func() {
+		progressCtx := tgservice.WithTransferProgress(c.ctx, func(progress tgservice.TransferProgress) {
+			c.deliver(transferProgressResult{progress: progress})
+		})
+		c.deliver(sendResult{err: c.session.Send(progressCtx, text, files)})
+	}()
+}
+
+func (c *chatConsole) handleTelegramEvent(event tgservice.Event) {
+	if event.Err != nil {
+		c.status = "Connection error: " + event.Err.Error()
+		return
+	}
+	line := "R> "
+	if event.Sender != "" {
+		line += "[" + event.Sender + "] "
+	}
+	line += event.Text
+	if event.File != nil {
+		if line != "R> " {
+			line += " "
 		}
-		m.input.SetWidth(width)
-	case eventMsg:
-		event := msg.event
-		var eventCmd tea.Cmd
-		if event.Err != nil {
-			m.status = "Connection error: " + event.Err.Error()
+		line += fmt.Sprintf("[%s, %s]", filepath.Base(event.File.Name), formatBytes(event.File.Size))
+		if c.pending == nil {
+			c.offerDownload(event.File)
 		} else {
-			line := "R> "
-			if event.Sender != "" {
-				line += "[" + event.Sender + "] "
-			}
-			line += event.Text
-			if event.File != nil {
-				if line != "R> " {
-					line += " "
-				}
-				line += fmt.Sprintf("[%s, %s]", filepath.Base(event.File.Name), formatBytes(event.File.Size))
-				if m.pending == nil {
-					eventCmd = m.offerDownload(event.File)
-				} else {
-					m.downloadQueue = append(m.downloadQueue, event.File)
-					m.status = fmt.Sprintf("%s queued for download (%d waiting)", filepath.Base(event.File.Name), len(m.downloadQueue))
-				}
-			}
-			m.addHistory(line)
+			c.downloadQueue = append(c.downloadQueue, event.File)
+			c.status = fmt.Sprintf("%s queued for download (%d waiting)", filepath.Base(event.File.Name), len(c.downloadQueue))
 		}
-		return m, tea.Batch(eventCmd, waitForEvent(m.session.Events()))
-	case sendResultMsg:
-		m.sending = false
-		if msg.err != nil {
-			m.status = "Send failed: " + msg.err.Error()
-			return m, nil
+	}
+	c.renderer.printLine(line)
+}
+
+func (c *chatConsole) handleResult(result any) {
+	switch result := result.(type) {
+	case sendResult:
+		c.sending = false
+		if result.err != nil {
+			c.status = "Send failed: " + result.err.Error()
+			return
 		}
-		for _, file := range m.attachments {
-			if file.Temporary {
-				_ = os.Remove(file.Path)
-			}
+		c.renderer.printLine(c.outgoingLine())
+		c.removeTemporaryAttachments()
+		c.draft = nil
+		c.cursor = 0
+		c.attachments = nil
+		c.status = ""
+	case pickResult:
+		c.picking = false
+		if result.err != nil {
+			c.status = result.err.Error()
+			return
 		}
-		m.input.Reset()
-		m.attachments = nil
-		m.status = "Sent"
-		return m, nil
-	case pickResultMsg:
-		if msg.err != nil {
-			m.status = msg.err.Error()
-			return m, nil
-		}
-		for _, file := range msg.files {
+		added := 0
+		for _, file := range result.files {
 			if info, err := os.Stat(file.Path); err == nil && info.Mode().IsRegular() {
-				m.attachments = append(m.attachments, attachment{selectedFile: file})
+				c.attachments = append(c.attachments, file)
+				added++
 			}
 		}
-		if len(msg.files) == 0 {
-			m.status = "No file selected"
+		if added == 0 {
+			c.status = "No file selected"
 		} else {
-			m.status = fmt.Sprintf("Attached %d file(s)", len(msg.files))
+			c.status = fmt.Sprintf("Attached %d file(s)", added)
 		}
-		return m, nil
-	case downloadResultMsg:
-		m.downloading = false
-		if msg.err != nil {
-			m.status = "Download failed: " + msg.err.Error()
+	case downloadResult:
+		c.downloading = false
+		if result.err != nil {
+			c.status = "Download failed: " + result.err.Error()
 		} else {
-			m.status = "Saved " + msg.path
+			c.status = "Saved " + result.path
 		}
-		return m, m.advanceDownload()
-	case autoDownloadMsg:
-		if msg.err != nil {
-			m.autoDownload = false
-			m.status = "Could not save always-download preference: " + msg.err.Error()
+		c.advanceDownload()
+	case autoDownloadResult:
+		if result.err != nil {
+			c.autoDownload = false
+			c.status = "Could not save always-download preference: " + result.err.Error()
 		}
-		return m, nil
-	case tea.KeyMsg:
-		if m.pending != nil {
-			if msg.String() == "ctrl+c" {
-				return m, tea.Quit
-			}
-			if m.downloading {
-				return m, nil
-			}
-			return m.updateDownloadPrompt(msg)
-		}
-		key := msg.String()
-		if m.sending {
-			if key == "ctrl+c" {
-				return m, tea.Quit
-			}
-			return m, nil
-		}
-		switch key {
-		case "ctrl+c":
-			return m, tea.Quit
-		case "ctrl+o":
-			return m, func() tea.Msg {
-				files, err := pickFiles()
-				return pickResultMsg{files: files, err: err}
-			}
-		case "ctrl+v":
-			return m, func() tea.Msg {
-				files, err := clipboardFiles()
-				if err == nil && len(files) == 0 {
-					err = fmt.Errorf("clipboard does not contain files or an image")
-				}
-				return pickResultMsg{files: files, err: err}
-			}
-		case "ctrl+j", "ctrl+\\", "alt+enter", "shift+enter":
-			m.input.InsertString("\n")
-			return m, nil
-		case "enter":
-			if m.sending {
-				return m, nil
-			}
-			text := m.input.Value()
-			if strings.TrimSpace(text) == "" && len(m.attachments) == 0 {
-				return m, nil
-			}
-			files := make([]string, len(m.attachments))
-			labels := make([]string, len(m.attachments))
-			for i, file := range m.attachments {
-				files[i] = file.Path
-				labels[i] = "[" + filepath.Base(file.Path) + "]"
-			}
-			line := "U> " + text
-			if len(labels) > 0 {
-				line += " " + strings.Join(labels, " ")
-			}
-			m.addHistory(strings.TrimSpace(line))
-			m.sending = true
-			m.status = "Sending..."
-			return m, func() tea.Msg {
-				return sendResultMsg{err: m.session.Send(m.ctx, text, files)}
-			}
-		}
-
-		if msg.Paste {
-			if files, ok := pastedFiles(string(msg.Runes)); ok {
-				for _, file := range files {
-					m.attachments = append(m.attachments, attachment{selectedFile: selectedFile{Path: file}})
-				}
-				m.status = fmt.Sprintf("Attached %d pasted file(s)", len(files))
-				return m, nil
-			}
-		}
+	case transferProgressResult:
+		c.status = formatTransferProgress(result.progress)
 	}
-
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	return m, cmd
 }
 
-func (m chatModel) updateDownloadPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	key := msg.String()
-	if m.renaming {
-		switch key {
-		case "esc":
-			m.status = "Download skipped"
-			return m, m.advanceDownload()
-		case "backspace":
-			runes := []rune(m.rename)
-			if len(runes) > 0 {
-				m.rename = string(runes[:len(runes)-1])
+func (c *chatConsole) outgoingLine() string {
+	line := "U> " + string(c.draft)
+	if len(c.attachments) > 0 {
+		labels := make([]string, len(c.attachments))
+		for index, file := range c.attachments {
+			labels[index] = "[" + filepath.Base(file.Path) + "]"
+		}
+		line += " " + strings.Join(labels, " ")
+	}
+	return strings.TrimSpace(line)
+}
+
+func (c *chatConsole) handleDownloadInput(key inputEvent) {
+	if c.downloading {
+		return
+	}
+	if c.renaming {
+		switch key.kind {
+		case inputEscape:
+			c.status = "Download skipped"
+			c.advanceDownload()
+		case inputBackspace:
+			if len(c.rename) > 0 {
+				c.rename = c.rename[:len(c.rename)-1]
 			}
-			m.status = "Save as: " + m.rename
-		case "enter":
-			name := filepath.Base(strings.TrimSpace(m.rename))
+			c.status = "Save as: " + string(c.rename)
+		case inputEnter:
+			name := filepath.Base(strings.TrimSpace(string(c.rename)))
 			if name == "" || name == "." {
-				m.status = "Enter a valid filename"
-				return m, nil
+				c.status = "Enter a valid filename"
+				return
 			}
-			path := m.downloadPath(name)
+			path := c.downloadPath(name)
 			if pathExists(path) {
-				m.status = name + " also exists; enter another filename"
-				return m, nil
+				c.status = name + " also exists; enter another filename"
+				return
 			}
-			m.status = "Downloading " + name + "..."
-			return m, m.download(false, path)
-		default:
-			if msg.Type == tea.KeyRunes {
-				m.rename += string(msg.Runes)
-				m.status = "Save as: " + m.rename
-			}
+			c.status = "Downloading " + name + "..."
+			c.startDownload(false, path)
+		case inputText, inputPaste:
+			c.rename = append(c.rename, []rune(safeTerminalText(key.text))...)
+			c.status = "Save as: " + string(c.rename)
 		}
-		return m, nil
+		return
 	}
 
-	if m.collision {
-		switch strings.ToLower(key) {
+	if c.collision {
+		if key.kind == inputEnter || key.kind == inputEscape {
+			c.status = "Download skipped"
+			c.advanceDownload()
+			return
+		}
+		if key.kind != inputText || len(key.text) != 1 {
+			return
+		}
+		switch strings.ToLower(key.text) {
 		case "y":
-			path := m.downloadPath(m.pending.Name)
-			m.status = "Downloading " + filepath.Base(path) + "..."
-			return m, m.download(true, path)
+			path := c.downloadPath(c.pending.Name)
+			c.status = "Downloading " + filepath.Base(path) + "..."
+			c.startDownload(true, path)
 		case "r":
-			m.renaming = true
-			m.rename = ""
-			m.status = "Save as: "
-		case "n", "enter", "esc":
-			m.status = "Download skipped"
-			return m, m.advanceDownload()
+			c.renaming = true
+			c.rename = nil
+			c.status = "Save as: "
+		case "n":
+			c.status = "Download skipped"
+			c.advanceDownload()
 		}
-		return m, nil
+		return
 	}
 
-	switch key {
+	if key.kind == inputEnter || key.kind == inputEscape {
+		c.status = "Download skipped"
+		c.advanceDownload()
+		return
+	}
+	if key.kind != inputText || len(key.text) != 1 {
+		return
+	}
+	switch key.text {
 	case "y", "Y":
-		path := m.downloadPath(m.pending.Name)
+		path := c.downloadPath(c.pending.Name)
 		if pathExists(path) {
-			m.collision = true
-			m.status = filepath.Base(path) + " already exists: [y] overwrite, [r] rename, [N] skip"
-			return m, nil
+			c.collision = true
+			c.status = filepath.Base(path) + " already exists: [y] overwrite, [r] rename, [N] skip"
+			return
 		}
-		m.status = "Downloading " + filepath.Base(path) + "..."
-		return m, m.download(false, path)
+		c.status = "Downloading " + filepath.Base(path) + "..."
+		c.startDownload(false, path)
 	case "A":
-		m.autoDownload = true
-		path := m.downloadPath(m.pending.Name)
-		var commands []tea.Cmd
-		if m.options.SetAutoDownload != nil {
-			commands = append(commands, func() tea.Msg {
-				return autoDownloadMsg{err: m.options.SetAutoDownload(true)}
-			})
+		c.autoDownload = true
+		if c.options.SetAutoDownload != nil {
+			go func() {
+				c.deliver(autoDownloadResult{err: c.options.SetAutoDownload(true)})
+			}()
 		}
+		path := c.downloadPath(c.pending.Name)
 		if pathExists(path) {
-			m.collision = true
-			m.status = filepath.Base(path) + " already exists: [y] overwrite, [r] rename, [N] skip"
+			c.collision = true
+			c.status = filepath.Base(path) + " already exists: [y] overwrite, [r] rename, [N] skip"
 		} else {
-			m.status = "Downloading " + filepath.Base(path) + "..."
-			commands = append(commands, m.download(false, path))
+			c.status = "Downloading " + filepath.Base(path) + "..."
+			c.startDownload(false, path)
 		}
-		return m, tea.Batch(commands...)
-	case "n", "N", "enter", "esc":
-		m.status = "Download skipped"
-		return m, m.advanceDownload()
+	case "n", "N":
+		c.status = "Download skipped"
+		c.advanceDownload()
 	}
-	return m, nil
 }
 
-func (m *chatModel) offerDownload(file *tgservice.RemoteFile) tea.Cmd {
-	m.pending = file
-	m.downloading = false
-	m.collision = false
-	m.renaming = false
-	m.rename = ""
-	path := m.downloadPath(file.Name)
-	if m.autoDownload {
+func (c *chatConsole) offerDownload(file *tgservice.RemoteFile) {
+	c.pending = file
+	c.downloading = false
+	c.collision = false
+	c.renaming = false
+	c.rename = nil
+	path := c.downloadPath(file.Name)
+	if c.autoDownload {
 		if pathExists(path) {
-			m.collision = true
-			m.status = fmt.Sprintf("%s already exists: [y] overwrite, [r] rename, [N] skip", filepath.Base(file.Name))
-			return nil
+			c.collision = true
+			c.status = fmt.Sprintf("%s already exists: [y] overwrite, [r] rename, [N] skip", filepath.Base(file.Name))
+			return
 		}
-		m.status = "Downloading " + filepath.Base(file.Name) + "..."
-		return m.download(false, path)
+		c.status = "Downloading " + filepath.Base(file.Name) + "..."
+		c.startDownload(false, path)
+		return
 	}
-	m.status = fmt.Sprintf("Download to %s? [y/N/A always]", path)
-	return nil
+	c.status = fmt.Sprintf("Download to %s? [y/N/A always]", path)
 }
 
-func (m *chatModel) advanceDownload() tea.Cmd {
-	m.pending = nil
-	m.downloading = false
-	m.collision = false
-	m.renaming = false
-	m.rename = ""
-	if len(m.downloadQueue) == 0 {
-		return nil
+func (c *chatConsole) advanceDownload() {
+	c.pending = nil
+	c.downloading = false
+	c.collision = false
+	c.renaming = false
+	c.rename = nil
+	if len(c.downloadQueue) == 0 {
+		return
 	}
-	next := m.downloadQueue[0]
-	m.downloadQueue = m.downloadQueue[1:]
-	return m.offerDownload(next)
+	next := c.downloadQueue[0]
+	c.downloadQueue = c.downloadQueue[1:]
+	c.offerDownload(next)
 }
 
-func (m chatModel) removeTemporaryAttachments() {
-	for _, file := range m.attachments {
+func (c *chatConsole) startDownload(overwrite bool, destination string) {
+	file := c.pending
+	c.downloading = true
+	go func() {
+		temp := destination + ".send-part"
+		_ = os.Remove(temp)
+		progressCtx := tgservice.WithTransferProgress(c.ctx, func(progress tgservice.TransferProgress) {
+			progress.Name = filepath.Base(destination)
+			c.deliver(transferProgressResult{progress: progress})
+		})
+		if err := file.Download(progressCtx, temp); err != nil {
+			_ = os.Remove(temp)
+			c.deliver(downloadResult{err: err})
+			return
+		}
+		if overwrite {
+			if err := os.Remove(destination); err != nil && !os.IsNotExist(err) {
+				_ = os.Remove(temp)
+				c.deliver(downloadResult{err: err})
+				return
+			}
+		}
+		if err := os.Rename(temp, destination); err != nil {
+			_ = os.Remove(temp)
+			c.deliver(downloadResult{err: err})
+			return
+		}
+		c.deliver(downloadResult{path: destination})
+	}()
+}
+
+func (c *chatConsole) deliver(result any) {
+	select {
+	case c.results <- result:
+	case <-c.ctx.Done():
+	}
+}
+
+func (c *chatConsole) removeTemporaryAttachments() {
+	for _, file := range c.attachments {
 		if file.Temporary {
 			_ = os.Remove(file.Path)
 		}
 	}
 }
 
-func (m *chatModel) download(overwrite bool, destination string) tea.Cmd {
-	file := m.pending
-	m.downloading = true
-	return func() tea.Msg {
-		temp := destination + ".send-part"
-		_ = os.Remove(temp)
-		if err := file.Download(m.ctx, temp); err != nil {
-			_ = os.Remove(temp)
-			return downloadResultMsg{err: err}
-		}
-		if overwrite {
-			if err := os.Remove(destination); err != nil && !os.IsNotExist(err) {
-				_ = os.Remove(temp)
-				return downloadResultMsg{err: err}
-			}
-		}
-		if err := os.Rename(temp, destination); err != nil {
-			_ = os.Remove(temp)
-			return downloadResultMsg{err: err}
-		}
-		return downloadResultMsg{path: destination}
-	}
-}
-
-func (m *chatModel) addHistory(line string) {
-	if strings.TrimSpace(line) == "" {
-		return
-	}
-	m.history = append(m.history, line)
-	if len(m.history) > 100 {
-		m.history = m.history[len(m.history)-100:]
-	}
-}
-
-func (m chatModel) downloadPath(name string) string {
+func (c *chatConsole) downloadPath(name string) string {
 	base := filepath.Base(strings.TrimSpace(name))
 	if base == "" || base == "." {
 		base = "telegram-download"
@@ -426,36 +530,297 @@ func (m chatModel) downloadPath(name string) string {
 	return filepath.Join(cwd, base)
 }
 
-func (m chatModel) View() string {
-	title := lipgloss.NewStyle().Bold(true).Render("Telegram · " + m.options.Receiver + " · connected")
-	var body strings.Builder
-	body.WriteString(title)
-	body.WriteString("\n\n")
-	start := 0
-	maxLines := m.height - 11
-	if maxLines < 3 {
-		maxLines = 3
+type renderer struct {
+	output           io.Writer
+	width            int
+	lines            int
+	cursorFromBottom int
+}
+
+func newRenderer(output *os.File) *renderer {
+	width, _, err := term.GetSize(int(output.Fd()))
+	if err != nil || width < 20 {
+		width = 80
 	}
-	if len(m.history) > maxLines {
-		start = len(m.history) - maxLines
+	return &renderer{output: output, width: width}
+}
+
+func (r *renderer) clear() {
+	if r.lines == 0 {
+		return
 	}
-	for _, line := range m.history[start:] {
-		body.WriteString(line)
-		body.WriteByte('\n')
+	if r.cursorFromBottom > 0 {
+		fmt.Fprintf(r.output, "\x1b[%dB", r.cursorFromBottom)
+		r.cursorFromBottom = 0
 	}
-	body.WriteByte('\n')
-	body.WriteString(m.input.View())
-	if len(m.attachments) > 0 {
-		body.WriteString("\nAttachments: ")
-		for _, file := range m.attachments {
-			body.WriteString("[" + filepath.Base(file.Path) + "] ")
+	fmt.Fprint(r.output, "\r")
+	for line := 0; line < r.lines; line++ {
+		fmt.Fprint(r.output, "\x1b[2K")
+		if line+1 < r.lines {
+			fmt.Fprint(r.output, "\x1b[1A\r")
 		}
 	}
-	if m.status != "" {
-		body.WriteString("\n" + m.status)
+	r.lines = 0
+}
+
+func (r *renderer) draw(c *chatConsole) {
+	r.clear()
+	var block strings.Builder
+	if c.status != "" {
+		block.WriteString(c.status)
+		block.WriteString("\n")
 	}
-	body.WriteString("\n\nEnter send · Shift+Enter/Ctrl+J/Ctrl+\\/Alt+Enter newline · Ctrl+O attach · Ctrl+C exit")
-	return body.String()
+	if len(c.attachments) > 0 {
+		block.WriteString("Attachments: ")
+		for _, file := range c.attachments {
+			block.WriteString("[")
+			block.WriteString(filepath.Base(file.Path))
+			block.WriteString("] ")
+		}
+		block.WriteString("\n")
+	}
+	block.WriteString("U> ")
+	block.WriteString(strings.ReplaceAll(string(c.draft), "\n", "\n   "))
+	text := safeTerminalText(block.String())
+	fmt.Fprint(r.output, strings.ReplaceAll(text, "\n", "\r\n"))
+	r.lines = visualLines(text, r.width)
+	if c.cursor < len(c.draft) {
+		promptStart := strings.TrimSuffix(text, strings.ReplaceAll(string(c.draft), "\n", "\n   "))
+		beforeCursor := promptStart + strings.ReplaceAll(string(c.draft[:c.cursor]), "\n", "\n   ")
+		endRow, _ := terminalPosition(text, r.width)
+		cursorRow, cursorColumn := terminalPosition(beforeCursor, r.width)
+		r.cursorFromBottom = endRow - cursorRow
+		if r.cursorFromBottom > 0 {
+			fmt.Fprintf(r.output, "\x1b[%dA", r.cursorFromBottom)
+		}
+		fmt.Fprint(r.output, "\r")
+		if cursorColumn > 0 {
+			fmt.Fprintf(r.output, "\x1b[%dC", cursorColumn)
+		}
+	}
+}
+
+func (r *renderer) printLine(line string) {
+	r.clear()
+	line = safeTerminalText(line)
+	fmt.Fprint(r.output, strings.ReplaceAll(line, "\n", "\r\n"))
+	fmt.Fprint(r.output, "\r\n")
+}
+
+func visualLines(value string, width int) int {
+	lines := 0
+	for _, line := range strings.Split(value, "\n") {
+		length := utf8.RuneCountInString(line)
+		lineCount := (length + width - 1) / width
+		if lineCount < 1 {
+			lineCount = 1
+		}
+		lines += lineCount
+	}
+	return lines
+}
+
+func terminalPosition(value string, width int) (row, column int) {
+	for _, char := range value {
+		if char == '\n' {
+			row++
+			column = 0
+			continue
+		}
+		column++
+		if column >= width {
+			row++
+			column = 0
+		}
+	}
+	return row, column
+}
+
+type inputKind uint8
+
+const (
+	inputText inputKind = iota
+	inputPaste
+	inputEnter
+	inputNewline
+	inputBackspace
+	inputPick
+	inputClipboard
+	inputEscape
+	inputLeft
+	inputRight
+	inputHome
+	inputEnd
+	inputDelete
+	inputClear
+	inputQuit
+	inputError
+)
+
+type inputEvent struct {
+	kind inputKind
+	text string
+	err  error
+}
+
+func readInput(ctx context.Context, input io.Reader, output chan<- inputEvent) {
+	parser := inputParser{}
+	buffer := make([]byte, 256)
+	for {
+		count, err := input.Read(buffer)
+		if count > 0 {
+			for _, event := range parser.Feed(buffer[:count]) {
+				select {
+				case output <- event:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		if err != nil {
+			select {
+			case output <- inputEvent{kind: inputError, err: err}:
+			case <-ctx.Done():
+			}
+			return
+		}
+	}
+}
+
+type inputParser struct {
+	pending []byte
+	pasting bool
+}
+
+var (
+	pasteStart       = []byte("\x1b[200~")
+	pasteEnd         = []byte("\x1b[201~")
+	newlineSequences = [][]byte{
+		[]byte("\x1b\r"),
+		[]byte("\x1b\n"),
+		[]byte("\x1b[13;2u"),
+		[]byte("\x1b[13;2~"),
+		[]byte("\x1b[27;2;13~"),
+	}
+)
+
+func (p *inputParser) Feed(data []byte) []inputEvent {
+	p.pending = append(p.pending, data...)
+	var events []inputEvent
+	for len(p.pending) > 0 {
+		if p.pasting {
+			end := bytes.Index(p.pending, pasteEnd)
+			if end < 0 {
+				return events
+			}
+			events = append(events, inputEvent{kind: inputPaste, text: string(p.pending[:end])})
+			p.pending = p.pending[end+len(pasteEnd):]
+			p.pasting = false
+			continue
+		}
+		if bytes.HasPrefix(p.pending, pasteStart) {
+			p.pending = p.pending[len(pasteStart):]
+			p.pasting = true
+			continue
+		}
+		if bytes.HasPrefix(pasteStart, p.pending) {
+			return events
+		}
+
+		switch p.pending[0] {
+		case 0x03:
+			events = append(events, inputEvent{kind: inputQuit})
+			p.pending = p.pending[1:]
+		case 0x08, 0x7f:
+			events = append(events, inputEvent{kind: inputBackspace})
+			p.pending = p.pending[1:]
+		case 0x0d:
+			events = append(events, inputEvent{kind: inputEnter})
+			p.pending = p.pending[1:]
+		case 0x0a, 0x1c:
+			events = append(events, inputEvent{kind: inputNewline})
+			p.pending = p.pending[1:]
+		case 0x0f:
+			events = append(events, inputEvent{kind: inputPick})
+			p.pending = p.pending[1:]
+		case 0x16:
+			events = append(events, inputEvent{kind: inputClipboard})
+			p.pending = p.pending[1:]
+		case 0x01:
+			events = append(events, inputEvent{kind: inputHome})
+			p.pending = p.pending[1:]
+		case 0x05:
+			events = append(events, inputEvent{kind: inputEnd})
+			p.pending = p.pending[1:]
+		case 0x15:
+			events = append(events, inputEvent{kind: inputClear})
+			p.pending = p.pending[1:]
+		case 0x1b:
+			event, consumed, wait := parseEscape(p.pending)
+			if wait {
+				return events
+			}
+			p.pending = p.pending[consumed:]
+			if event != nil {
+				events = append(events, *event)
+			}
+		default:
+			if !utf8.FullRune(p.pending) {
+				return events
+			}
+			r, size := utf8.DecodeRune(p.pending)
+			p.pending = p.pending[size:]
+			if r == utf8.RuneError && size == 1 {
+				continue
+			}
+			if r == '\t' || r >= ' ' && r != '\x7f' {
+				events = append(events, inputEvent{kind: inputText, text: string(r)})
+			}
+		}
+	}
+	return events
+}
+
+func parseEscape(data []byte) (*inputEvent, int, bool) {
+	if len(data) == 1 {
+		return nil, 0, true
+	}
+	for _, sequence := range newlineSequences {
+		if bytes.HasPrefix(data, sequence) {
+			return &inputEvent{kind: inputNewline}, len(sequence), false
+		}
+		if bytes.HasPrefix(sequence, data) {
+			return nil, 0, true
+		}
+	}
+	if data[1] == '[' {
+		for index := 2; index < len(data); index++ {
+			if data[index] >= 0x40 && data[index] <= 0x7e {
+				sequence := string(data[:index+1])
+				kind, ok := map[string]inputKind{
+					"\x1b[D":  inputLeft,
+					"\x1b[C":  inputRight,
+					"\x1b[H":  inputHome,
+					"\x1b[F":  inputEnd,
+					"\x1b[1~": inputHome,
+					"\x1b[4~": inputEnd,
+					"\x1b[3~": inputDelete,
+				}[sequence]
+				if ok {
+					return &inputEvent{kind: kind}, index + 1, false
+				}
+				return nil, index + 1, false
+			}
+		}
+		return nil, 0, true
+	}
+	if data[1] == 'O' {
+		if len(data) < 3 {
+			return nil, 0, true
+		}
+		return nil, 3, false
+	}
+	return &inputEvent{kind: inputEscape}, 1, false
 }
 
 func pastedFiles(value string) ([]string, bool) {
@@ -483,6 +848,15 @@ func pastedFiles(value string) ([]string, bool) {
 	return files, true
 }
 
+func safeTerminalText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || r >= ' ' && r != '\x7f' {
+			return r
+		}
+		return -1
+	}, value)
+}
+
 func pathExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -502,4 +876,26 @@ func formatBytes(size int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(size)/float64(div), "KMGTPE"[exp])
+}
+
+func formatTransferProgress(progress tgservice.TransferProgress) string {
+	action := "Uploading"
+	if progress.Direction == tgservice.TransferDownload {
+		action = "Downloading"
+	}
+	status := fmt.Sprintf("%s %s: %s", action, filepath.Base(progress.Name), formatBytes(progress.Transferred))
+	if progress.Total > 0 {
+		percent := float64(progress.Transferred) * 100 / float64(progress.Total)
+		if percent > 100 {
+			percent = 100
+		}
+		status += fmt.Sprintf(" / %s (%.0f%%)", formatBytes(progress.Total), percent)
+	}
+	if progress.Elapsed > 0 && progress.Transferred > 0 {
+		bytesPerSecond := int64(float64(progress.Transferred) / progress.Elapsed.Seconds())
+		if bytesPerSecond > 0 {
+			status += " at " + formatBytes(bytesPerSecond) + "/s"
+		}
+	}
+	return status
 }

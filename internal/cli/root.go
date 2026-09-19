@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -17,11 +18,12 @@ import (
 	"golang.org/x/term"
 
 	"send-cli/internal/config"
+	"send-cli/internal/lockfile"
 	tgservice "send-cli/internal/telegram"
 	"send-cli/internal/ui"
 )
 
-const version = "0.1.0"
+var version = "0.1.0"
 
 func Execute() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -89,10 +91,7 @@ func newTelegramCommand() *cobra.Command {
 				if err := store.Save(cfg); err != nil {
 					return err
 				}
-				if err := os.Remove(store.SessionPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
-					return fmt.Errorf("remove Telegram session: %w", err)
-				}
-				fmt.Fprintln(command.OutOrStdout(), "Removed local Telegram login and receiver configuration.")
+				fmt.Fprintln(command.OutOrStdout(), "Removed local Telegram bot token and receiver configuration.")
 				return nil
 			}
 			if askDownloads {
@@ -102,7 +101,7 @@ func newTelegramCommand() *cobra.Command {
 				}
 			}
 			if setup || !cfg.Telegram.Ready() {
-				telegramConfig, err := setupTelegram(command.Context(), store, command.InOrStdin(), command.OutOrStdout())
+				telegramConfig, err := setupTelegram(command.Context(), command.InOrStdin(), command.OutOrStdout())
 				if err != nil {
 					return err
 				}
@@ -117,10 +116,7 @@ func newTelegramCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			service, err := telegramService(store, cfg.Telegram)
-			if err != nil {
-				return err
-			}
+			service := tgservice.NewBotService(cfg.Telegram.BotToken, cfg.Telegram.Receiver)
 			interactive := len(files) == 0 && !command.Flags().Changed("message")
 			if !interactive {
 				return service.Run(command.Context(), false, func(session tgservice.Session) error {
@@ -138,6 +134,14 @@ func newTelegramCommand() *cobra.Command {
 			if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 				return errors.New("interactive mode requires a terminal; provide files or use -m")
 			}
+			receiverLock, err := lockfile.Acquire(filepath.Join(filepath.Dir(store.Path()), "telegram-receiver.lock"))
+			if errors.Is(err, lockfile.ErrLocked) {
+				return errors.New("another send instance is already receiving Telegram updates; close it before starting interactive mode")
+			}
+			if err != nil {
+				return fmt.Errorf("protect Telegram receiver: %w", err)
+			}
+			defer receiverLock.Release()
 			return service.Run(command.Context(), true, func(session tgservice.Session) error {
 				return ui.Run(command.Context(), session, ui.Options{
 					Receiver:     receiverName(cfg.Telegram.Receiver),
@@ -155,65 +159,42 @@ func newTelegramCommand() *cobra.Command {
 		},
 	}
 	command.Flags().StringVarP(&message, "message", "m", "", "message or file caption")
-	command.Flags().BoolVar(&setup, "setup", false, "log in and select a default receiver")
-	command.Flags().BoolVar(&logout, "logout", false, "remove the local Telegram login and configuration")
+	command.Flags().BoolVar(&setup, "setup", false, "configure a BotFather token and select a default receiver")
+	command.Flags().BoolVar(&logout, "logout", false, "remove the local Telegram bot token and configuration")
 	command.Flags().BoolVar(&askDownloads, "ask-downloads", false, "ask before downloading incoming files again")
 	return command
 }
 
-func telegramService(store *config.Store, cfg config.TelegramConfig) (tgservice.Service, error) {
-	switch cfg.Mode {
-	case "bot":
-		return tgservice.NewBotService(cfg.BotToken, cfg.Receiver), nil
-	case "user":
-		return tgservice.NewUserService(store.SessionPath(), cfg.Receiver)
-	default:
-		return nil, fmt.Errorf("unknown Telegram mode %q; run send telegram --setup", cfg.Mode)
-	}
-}
-
-func setupTelegram(ctx context.Context, store *config.Store, input io.Reader, output io.Writer) (config.TelegramConfig, error) {
+func setupTelegram(ctx context.Context, input io.Reader, output io.Writer) (config.TelegramConfig, error) {
 	reader := bufio.NewReader(input)
-	fmt.Fprintln(output, "Telegram setup")
-	fmt.Fprintln(output, "  1. User account (phone/code/2FA)")
-	fmt.Fprintln(output, "  2. Bot API token")
-	fmt.Fprint(output, "Choose [1/2]: ")
-	choice, err := reader.ReadString('\n')
-	if err != nil {
-		return config.TelegramConfig{}, err
+	fmt.Fprintln(output, "Telegram BotFather setup")
+	fmt.Fprint(output, "Bot token: ")
+	var (
+		token string
+		err   error
+	)
+	if file, ok := input.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
+		value, readErr := term.ReadPassword(int(file.Fd()))
+		fmt.Fprintln(output)
+		if readErr != nil {
+			return config.TelegramConfig{}, readErr
+		}
+		token = strings.TrimSpace(string(value))
+	} else {
+		token, err = reader.ReadString('\n')
+		if err != nil {
+			return config.TelegramConfig{}, err
+		}
+		token = strings.TrimSpace(token)
+	}
+	if token == "" {
+		return config.TelegramConfig{}, errors.New("bot token cannot be empty")
 	}
 	marker, err := setupMarker()
 	if err != nil {
 		return config.TelegramConfig{}, err
 	}
-	switch strings.TrimSpace(strings.ToLower(choice)) {
-	case "1", "user", "u":
-		return tgservice.SetupUser(ctx, store.SessionPath(), marker, output)
-	case "2", "bot", "b":
-		fmt.Fprint(output, "BotFather token: ")
-		var token string
-		if file, ok := input.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
-			value, readErr := term.ReadPassword(int(file.Fd()))
-			fmt.Fprintln(output)
-			if readErr != nil {
-				return config.TelegramConfig{}, readErr
-			}
-			token = strings.TrimSpace(string(value))
-		} else {
-			token, err = reader.ReadString('\n')
-			if err != nil {
-				return config.TelegramConfig{}, err
-			}
-			token = strings.TrimSpace(token)
-		}
-		if token == "" {
-			return config.TelegramConfig{}, errors.New("bot token cannot be empty")
-		}
-		botMarker := "/sendcli_" + strings.ReplaceAll(strings.TrimPrefix(marker, "send-cli setup "), "-", "")
-		return tgservice.SetupBot(ctx, token, botMarker, output)
-	default:
-		return config.TelegramConfig{}, errors.New("choose 1 for a user account or 2 for a bot")
-	}
+	return tgservice.SetupBot(ctx, token, marker, output)
 }
 
 func setupMarker() (string, error) {
@@ -222,7 +203,7 @@ func setupMarker() (string, error) {
 		return "", fmt.Errorf("create setup marker: %w", err)
 	}
 	encoded := strings.ToUpper(hex.EncodeToString(value[:]))
-	return "send-cli setup " + encoded[:5] + "-" + encoded[5:], nil
+	return "/sendcli_" + encoded, nil
 }
 
 func receiverName(receiver config.Receiver) string {
@@ -254,7 +235,7 @@ func newListCommand() *cobra.Command {
 			}
 			status, receiver := "not set up", "—"
 			if cfg.Telegram.Ready() {
-				status = "ready (" + cfg.Telegram.Mode + ")"
+				status = "ready (bot)"
 				receiver = receiverName(cfg.Telegram.Receiver)
 			}
 			writer := command.OutOrStdout()

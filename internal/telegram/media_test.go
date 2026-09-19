@@ -1,6 +1,11 @@
 package telegram
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestMediaMethod(t *testing.T) {
 	tests := map[string]string{
@@ -12,6 +17,35 @@ func TestMediaMethod(t *testing.T) {
 		got, _ := mediaMethod(path)
 		if got != want {
 			t.Errorf("mediaMethod(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestValidateFilesRejectsOfficialBotAPISizeLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		size int64
+		want string
+	}{
+		{"large.jpg", officialPhotoUploadLimit + 1, "photo uploads up to 10 MiB"},
+		{"large.zip", officialFileUploadLimit + 1, "file uploads up to 50 MiB"},
+	}
+	for _, test := range tests {
+		path := filepath.Join(t.TempDir(), test.name)
+		file, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Truncate(test.size); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		_, err = ValidateFiles([]string{path})
+		if err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Errorf("ValidateFiles(%s) error = %v, want %q", test.name, err, test.want)
 		}
 	}
 }
