@@ -295,6 +295,140 @@ func TestBotSessionSendsPhotoAndVideoAlbum(t *testing.T) {
 	}
 }
 
+func TestPollProcessesUpdatesAfterSavedOffset(t *testing.T) {
+	const token = "test-token"
+	requestOffsets := make(chan string, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		offset := r.FormValue("offset")
+		requestOffsets <- offset
+		if offset != "10" {
+			<-r.Context().Done()
+			return
+		}
+		writeBotResponse(t, w, true, []map[string]any{{
+			"update_id": 10,
+			"message": map[string]any{
+				"message_id": 1,
+				"chat":       map[string]any{"id": 42, "type": "private", "first_name": "Receiver"},
+				"from":       map[string]any{"id": 7, "first_name": "Alice"},
+				"text":       "queued message",
+			},
+		}})
+	}))
+	defer server.Close()
+
+	client := newBotClient(token)
+	client.baseURL = server.URL
+	client.http = server.Client()
+	saved := make(chan int64, 4)
+	session := &botSession{
+		client:                  client,
+		chatID:                  42,
+		events:                  make(chan Event, 4),
+		updateOffset:            10,
+		updateOffsetInitialized: true,
+		saveUpdateOffset: func(offset int64) error {
+			saved <- offset
+			return nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go session.poll(ctx)
+
+	select {
+	case event := <-session.events:
+		if event.Text != "queued message" {
+			t.Fatalf("event = %#v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for queued update")
+	}
+	select {
+	case offset := <-saved:
+		if offset != 11 {
+			t.Fatalf("saved offset = %d, want 11", offset)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for saved offset")
+	}
+	if offset := <-requestOffsets; offset != "10" {
+		t.Fatalf("requested offset = %q, want 10", offset)
+	}
+}
+
+func TestPollMigrationSkipsRetainedUpdate(t *testing.T) {
+	const token = "test-token"
+	var requests atomic.Int32
+	requestOffsets := make(chan string, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		requestOffsets <- r.FormValue("offset")
+		request := requests.Add(1)
+		if request == 1 {
+			writeBotResponse(t, w, true, []map[string]any{{
+				"update_id": 99,
+				"message": map[string]any{
+					"message_id": 1,
+					"chat":       map[string]any{"id": 42, "type": "private"},
+					"text":       "old message",
+				},
+			}})
+			return
+		}
+		if r.FormValue("offset") != "100" {
+			<-r.Context().Done()
+			return
+		}
+		writeBotResponse(t, w, true, []map[string]any{{
+			"update_id": 100,
+			"message": map[string]any{
+				"message_id": 2,
+				"chat":       map[string]any{"id": 42, "type": "private"},
+				"text":       "new message",
+			},
+		}})
+	}))
+	defer server.Close()
+
+	client := newBotClient(token)
+	client.baseURL = server.URL
+	client.http = server.Client()
+	saved := make(chan int64, 4)
+	session := &botSession{
+		client: client,
+		chatID: 42,
+		events: make(chan Event, 4),
+		saveUpdateOffset: func(offset int64) error {
+			saved <- offset
+			return nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go session.poll(ctx)
+
+	select {
+	case event := <-session.events:
+		if event.Text != "new message" {
+			t.Fatalf("migration replayed retained event: %#v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for post-migration update")
+	}
+	if first := <-requestOffsets; first != "-1" {
+		t.Fatalf("migration offset = %q, want -1", first)
+	}
+	if second := <-requestOffsets; second != "100" {
+		t.Fatalf("post-migration offset = %q, want 100", second)
+	}
+}
+
 func writeBotResponse(t *testing.T, writer http.ResponseWriter, ok bool, result any) {
 	t.Helper()
 	writer.Header().Set("Content-Type", "application/json")

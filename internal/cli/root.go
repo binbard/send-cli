@@ -117,6 +117,17 @@ func newTelegramCommand() *cobra.Command {
 				return err
 			}
 			service := tgservice.NewBotService(cfg.Telegram.BotToken, cfg.Telegram.Receiver)
+			service.ResumeUpdates(
+				cfg.Telegram.UpdateOffset,
+				cfg.Telegram.UpdateOffsetInitialized,
+				func(offset int64) error {
+					return store.Update(func(latest *config.Config) error {
+						latest.Telegram.UpdateOffset = offset
+						latest.Telegram.UpdateOffsetInitialized = true
+						return nil
+					})
+				},
+			)
 			interactive := len(files) == 0 && !command.Flags().Changed("message")
 			if !interactive {
 				return service.Run(command.Context(), false, func(session tgservice.Session) error {
@@ -147,12 +158,10 @@ func newTelegramCommand() *cobra.Command {
 					Receiver:     receiverName(cfg.Telegram.Receiver),
 					AutoDownload: cfg.Telegram.AutoDownload,
 					SetAutoDownload: func(enabled bool) error {
-						latest, err := store.Load()
-						if err != nil {
-							return err
-						}
-						latest.Telegram.AutoDownload = enabled
-						return store.Save(latest)
+						return store.Update(func(latest *config.Config) error {
+							latest.Telegram.AutoDownload = enabled
+							return nil
+						})
 					},
 				})
 			})

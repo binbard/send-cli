@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 )
 
 const currentVersion = 1
@@ -17,9 +18,11 @@ type Config struct {
 }
 
 type TelegramConfig struct {
-	BotToken     string   `json:"bot_token,omitempty"`
-	Receiver     Receiver `json:"receiver"`
-	AutoDownload bool     `json:"auto_download,omitempty"`
+	BotToken                string   `json:"bot_token,omitempty"`
+	Receiver                Receiver `json:"receiver"`
+	AutoDownload            bool     `json:"auto_download,omitempty"`
+	UpdateOffset            int64    `json:"update_offset,omitempty"`
+	UpdateOffsetInitialized bool     `json:"update_offset_initialized,omitempty"`
 }
 
 type Receiver struct {
@@ -35,6 +38,20 @@ func (t TelegramConfig) Ready() bool {
 
 type Store struct {
 	path string
+	mu   sync.Mutex
+}
+
+func (s *Store) Update(change func(*Config) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cfg, err := s.Load()
+	if err != nil {
+		return err
+	}
+	if err := change(&cfg); err != nil {
+		return err
+	}
+	return s.Save(cfg)
 }
 
 func NewStore() (*Store, error) {

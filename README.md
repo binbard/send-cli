@@ -41,6 +41,11 @@ to accept one file or `A` to accept this and future files from the configured
 receiver. If a filename exists, press `y` to overwrite, `r` to choose another
 name, or `N` to skip. `send tg --ask-downloads` restores prompting.
 
+The receive position is saved after each update batch. Messages and files that
+arrive while `send tg` is closed are shown the next time interactive mode starts.
+Existing installations establish a receive baseline once when upgrading, so
+old retained updates are not unexpectedly replayed.
+
 ## Telegram setup
 
 The first Telegram command, or `send tg --setup`, asks for a

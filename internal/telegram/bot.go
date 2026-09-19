@@ -20,8 +20,17 @@ import (
 )
 
 type BotService struct {
-	client   *botClient
-	receiver config.Receiver
+	client                  *botClient
+	receiver                config.Receiver
+	updateOffset            int64
+	updateOffsetInitialized bool
+	saveUpdateOffset        func(int64) error
+}
+
+func (s *BotService) ResumeUpdates(offset int64, initialized bool, save func(int64) error) {
+	s.updateOffset = offset
+	s.updateOffsetInitialized = initialized
+	s.saveUpdateOffset = save
 }
 
 func NewBotService(token string, receiver config.Receiver) *BotService {
@@ -35,9 +44,12 @@ func (s *BotService) Run(ctx context.Context, interactive bool, fn func(Session)
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	session := &botSession{
-		client: s.client,
-		chatID: s.receiver.ID,
-		events: make(chan Event, 32),
+		client:                  s.client,
+		chatID:                  s.receiver.ID,
+		events:                  make(chan Event, 32),
+		updateOffset:            s.updateOffset,
+		updateOffsetInitialized: s.updateOffsetInitialized,
+		saveUpdateOffset:        s.saveUpdateOffset,
 	}
 	if interactive {
 		go session.poll(runCtx)
@@ -46,9 +58,12 @@ func (s *BotService) Run(ctx context.Context, interactive bool, fn func(Session)
 }
 
 type botSession struct {
-	client *botClient
-	chatID int64
-	events chan Event
+	client                  *botClient
+	chatID                  int64
+	events                  chan Event
+	updateOffset            int64
+	updateOffsetInitialized bool
+	saveUpdateOffset        func(int64) error
 }
 
 func (s *botSession) Events() <-chan Event {
@@ -124,14 +139,31 @@ func (s *botSession) sendMediaGroups(ctx context.Context, files []string, captio
 }
 
 func (s *botSession) poll(ctx context.Context) {
-	offset := int64(0)
+	offset := s.updateOffset
 	failures := 0
-	initial, err := s.client.getUpdates(ctx, 0, 0)
-	if err == nil {
-		for _, update := range initial {
-			if update.UpdateID >= offset {
-				offset = update.UpdateID + 1
+	if !s.updateOffsetInitialized {
+		for ctx.Err() == nil {
+			initial, err := s.client.getUpdates(ctx, -1, 0)
+			if err != nil {
+				select {
+				case s.events <- Event{Err: err}:
+				case <-ctx.Done():
+					return
+				}
+				if !waitForRetry(ctx, pollRetryDelay(failures)) {
+					return
+				}
+				failures++
+				continue
 			}
+			for _, update := range initial {
+				if update.UpdateID >= offset {
+					offset = update.UpdateID + 1
+				}
+			}
+			s.persistUpdateOffset(ctx, offset)
+			failures = 0
+			break
 		}
 	}
 	for ctx.Err() == nil {
@@ -152,8 +184,11 @@ func (s *botSession) poll(ctx context.Context) {
 			continue
 		}
 		failures = 0
+		nextOffset := offset
 		for _, update := range updates {
-			offset = update.UpdateID + 1
+			if update.UpdateID >= nextOffset {
+				nextOffset = update.UpdateID + 1
+			}
 			message := update.message()
 			if message == nil || message.Chat.ID != s.chatID {
 				continue
@@ -164,6 +199,22 @@ func (s *botSession) poll(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			}
+		}
+		if nextOffset != offset {
+			offset = nextOffset
+			s.persistUpdateOffset(ctx, offset)
+		}
+	}
+}
+
+func (s *botSession) persistUpdateOffset(ctx context.Context, offset int64) {
+	if s.saveUpdateOffset == nil {
+		return
+	}
+	if err := s.saveUpdateOffset(offset); err != nil {
+		select {
+		case s.events <- Event{Err: fmt.Errorf("save Telegram receive position: %w", err)}:
+		case <-ctx.Done():
 		}
 	}
 }
@@ -198,7 +249,9 @@ func SetupBot(ctx context.Context, token, marker string, output io.Writer) (conf
 				fmt.Fprintln(output, "Group privacy note: to receive ordinary group messages, make the bot an administrator or disable privacy for it with BotFather /setprivacy.")
 			}
 			return config.TelegramConfig{
-				BotToken: token,
+				BotToken:                token,
+				UpdateOffset:            offset,
+				UpdateOffsetInitialized: true,
 				Receiver: config.Receiver{
 					Kind:     "bot_chat",
 					ID:       msg.Chat.ID,
