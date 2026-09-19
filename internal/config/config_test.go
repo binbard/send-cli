@@ -18,6 +18,7 @@ func TestStoreRoundTrip(t *testing.T) {
 			UpdateOffsetInitialized: true,
 		},
 		WhatsApp: WhatsAppConfig{DefaultRecipient: "+919876543210"},
+		HTTP:     HTTPConfig{AutoDownload: true, LastPort: 8082},
 	}
 	if err := store.Save(want); err != nil {
 		t.Fatal(err)
@@ -26,7 +27,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Version != currentVersion || got.Telegram.Receiver.ID != 42 || got.Telegram.BotToken != "secret" || got.Telegram.UpdateOffset != 123 || !got.Telegram.UpdateOffsetInitialized || got.WhatsApp.DefaultRecipient != "+919876543210" {
+	if got.Version != currentVersion || got.Telegram.Receiver.ID != 42 || got.Telegram.BotToken != "secret" || got.Telegram.UpdateOffset != 123 || !got.Telegram.UpdateOffsetInitialized || got.WhatsApp.DefaultRecipient != "+919876543210" || !got.HTTP.AutoDownload || got.HTTP.LastPort != 8082 {
 		t.Fatalf("unexpected config: %#v", got)
 	}
 	if runtime.GOOS == "windows" {

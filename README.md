@@ -14,7 +14,8 @@ send telegram file3.html
 send tg file3.html file32.html
 send tg -m "Everything is good."
 send tg
-send http https://example.test/upload report.pdf -m "Monthly report"
+send http report.pdf photo.jpg -m "Files for the team"
+send http post https://example.test/upload report.pdf -m "Monthly report"
 send adb report.pdf --to /sdcard/Download/
 send ssh user@example.com report.pdf --to /srv/drop/
 send wa --setup
@@ -79,10 +80,31 @@ installed and USB or wireless debugging must be authorized.
 
 ## HTTP
 
-`send http <url> [files...]` sends a plain UTF-8 request body when only `-m` is
-provided. With files, it streams `multipart/form-data` containing a `message`
-field and repeated `files` parts. Use `--method`, repeatable `-H/--header`, and
-`--timeout` to customize the request.
+`send http [files...]` starts a session-scoped web app at the LAN address root
+and keeps it available while the terminal command remains open. The terminal
+uses the same interactive composer as Telegram and WhatsApp: type messages,
+attach more files, receive browser messages, and accept or skip incoming browser
+uploads.
+
+Press `r` in the empty terminal composer to toggle a scannable QR code. The web
+interface also has a small **QR** button for connecting another device.
+
+The responsive browser interface shows all files shared during the session,
+supports downloads, live messages, and drag-and-drop uploads. Browser activity
+is identified simply as `Browser`. Uploaded files use temporary session storage
+and are removed when the share closes unless accepted through the terminal
+download prompt.
+
+The first share uses port 8080 and automatically tries 8081, 8082, and so on if
+needed. The successful port is remembered for the next run. Use `--bind` or an
+explicit `--port` to control the listener. This is unauthenticated plain HTTP
+intended only for a trusted local network.
+
+The previous outbound HTTP client remains available as
+`send http post <url> [files...]`. URL-first commands such as
+`send http https://example.test/upload report.pdf` also remain compatible. With
+files, outbound requests stream `multipart/form-data`; use `--method`,
+`-H/--header`, and `--timeout` to customize them.
 
 Two or more compatible photos/videos are sent as Telegram media albums in
 ordered groups of up to 10. Documents and unsupported mixed batches are sent

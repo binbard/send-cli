@@ -45,6 +45,33 @@ func TestHTTPCommand(t *testing.T) {
 	if gotBody != "hello" || !strings.Contains(output.String(), "202 Accepted") {
 		t.Fatalf("body=%q output=%q", gotBody, output.String())
 	}
+
+	gotBody = ""
+	command = newRootCommand()
+	output.Reset()
+	command.SetOut(&output)
+	command.SetArgs([]string{"http", "post", server.URL, "-m", "explicit"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if gotBody != "explicit" || !strings.Contains(output.String(), "202 Accepted") {
+		t.Fatalf("explicit post body=%q output=%q", gotBody, output.String())
+	}
+}
+
+func TestHTTPHelpDescribesInteractiveWebShare(t *testing.T) {
+	command := newRootCommand()
+	var output strings.Builder
+	command.SetOut(&output)
+	command.SetArgs([]string{"http", "--help"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, phrase := range []string{"session-scoped web app", "local network", "last successful port", "interactive composer", "send http post"} {
+		if !strings.Contains(output.String(), phrase) {
+			t.Errorf("HTTP help does not mention %q:\n%s", phrase, output.String())
+		}
+	}
 }
 
 func TestTelegramAliases(t *testing.T) {

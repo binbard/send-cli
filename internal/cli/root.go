@@ -418,25 +418,97 @@ func newADBCommand() *cobra.Command {
 
 func newHTTPCommand() *cobra.Command {
 	var (
-		message string
-		method  string
-		headers []string
-		timeout time.Duration
+		message      string
+		method       string
+		headers      []string
+		timeout      time.Duration
+		address      string
+		port         int
+		askDownloads bool
 	)
 	command := &cobra.Command{
-		Use:   "http <url> [files...]",
-		Short: "Send files or a message to an HTTP endpoint",
-		Args:  cobra.MinimumNArgs(1),
+		Use:   "http [files...]",
+		Short: "Share files and messages in a browser over the LAN",
+		Long: "Start a session-scoped web app for sharing files and messages over the local network. " +
+			"When --port is omitted, the last successful port is tried first, beginning with 8080, and the next available port is used. " +
+			"The terminal opens the same interactive composer used by Telegram and WhatsApp.\n\n" +
+			"For compatibility, a first argument beginning with http:// or https:// sends an outbound HTTP request. " +
+			"The explicit form is send http post <url> [files...].",
+		Example: "  send http report.pdf photo.jpg\n" +
+			"  send http\n" +
+			"  send http --port 8080 -m \"Files for the team\"\n" +
+			"  send http post https://example.test/upload report.pdf",
+		Args: cobra.ArbitraryArgs,
 		RunE: func(command *cobra.Command, args []string) error {
-			result, err := httpchannel.Send(command.Context(), httpchannel.Request{
-				URL: args[0], Method: method, Message: message, Files: args[1:],
-				Headers: headers, Timeout: timeout,
-			})
+			if len(args) > 0 && isHTTPURL(args[0]) {
+				return runHTTPPost(command, args[0], args[1:], message, method, headers, timeout)
+			}
+			if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+				return errors.New("HTTP sharing requires a terminal; use 'send http post <url>' for an outbound request")
+			}
+			store, err := config.NewStore()
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(command.OutOrStdout(), "HTTP %s succeeded (%s).\n", strings.ToUpper(method), result.Status)
-			return nil
+			cfg, err := store.Load()
+			if err != nil {
+				return err
+			}
+			if askDownloads {
+				cfg.HTTP.AutoDownload = false
+				if err := store.Save(cfg); err != nil {
+					return err
+				}
+			}
+			incrementPort := !command.Flags().Changed("port")
+			if incrementPort && cfg.HTTP.LastPort >= 1 && cfg.HTTP.LastPort <= 65535 {
+				port = cfg.HTTP.LastPort
+			}
+			return httpchannel.Serve(command.Context(), httpchannel.ShareOptions{
+				Address: address, Port: port, IncrementPort: incrementPort, InitialMessage: message, Files: args,
+			}, func(ctx context.Context, session tgservice.Session, info httpchannel.ShareInfo) error {
+				if err := store.Update(func(latest *config.Config) error {
+					latest.HTTP.LastPort = info.Port
+					return nil
+				}); err != nil {
+					return err
+				}
+				return ui.Run(ctx, session, ui.Options{
+					Channel: "HTTP", Receiver: info.URL, QRCode: info.URL, AutoDownload: cfg.HTTP.AutoDownload,
+					SetAutoDownload: func(enabled bool) error {
+						return store.Update(func(latest *config.Config) error {
+							latest.HTTP.AutoDownload = enabled
+							return nil
+						})
+					},
+				})
+			})
+		},
+	}
+	command.Flags().StringVarP(&message, "message", "m", "", "initial shared message")
+	command.Flags().StringVar(&address, "bind", "0.0.0.0", "local address to bind")
+	command.Flags().IntVar(&port, "port", httpchannel.DefaultPort, "TCP port; omitted uses the last successful port, initially 8080")
+	command.Flags().BoolVar(&askDownloads, "ask-downloads", false, "ask before downloading incoming files again")
+	command.Flags().StringVar(&method, "method", http.MethodPost, "outbound compatibility mode HTTP method")
+	command.Flags().StringArrayVarP(&headers, "header", "H", nil, "outbound compatibility request header")
+	command.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "outbound compatibility request timeout")
+	_ = command.Flags().MarkHidden("method")
+	_ = command.Flags().MarkHidden("header")
+	_ = command.Flags().MarkHidden("timeout")
+	command.AddCommand(newHTTPPostCommand())
+	return command
+}
+
+func newHTTPPostCommand() *cobra.Command {
+	var message, method string
+	var headers []string
+	var timeout time.Duration
+	command := &cobra.Command{
+		Use:   "post <url> [files...]",
+		Short: "Send files or a message to an HTTP endpoint",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			return runHTTPPost(command, args[0], args[1:], message, method, headers, timeout)
 		},
 	}
 	command.Flags().StringVarP(&message, "message", "m", "", "message body or multipart message field")
@@ -444,6 +516,22 @@ func newHTTPCommand() *cobra.Command {
 	command.Flags().StringArrayVarP(&headers, "header", "H", nil, "request header in 'Name: value' form (repeatable)")
 	command.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "request timeout")
 	return command
+}
+
+func runHTTPPost(command *cobra.Command, endpoint string, files []string, message, method string, headers []string, timeout time.Duration) error {
+	result, err := httpchannel.Send(command.Context(), httpchannel.Request{
+		URL: endpoint, Method: method, Message: message, Files: files, Headers: headers, Timeout: timeout,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(command.OutOrStdout(), "HTTP %s succeeded (%s).\n", strings.ToUpper(method), result.Status)
+	return nil
+}
+
+func isHTTPURL(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
 }
 
 func newTelegramCommand() *cobra.Command {
@@ -652,7 +740,7 @@ func newListCommand() *cobra.Command {
 			fmt.Fprintf(table, "whatsapp\twa\t%s\t%s\n", whatsappStatus, whatsappReceiver)
 			fmt.Fprintln(table, "adb\t—\tready\tconnected device")
 			fmt.Fprintln(table, "ssh\t—\tready\tuser@host required")
-			fmt.Fprintln(table, "http\t—\tready\tURL required")
+			fmt.Fprintln(table, "http\t—\tready\tprivate LAN web share")
 			fmt.Fprintln(table, "lan\t—\tready\tdiscovery or --to")
 			return table.Flush()
 		},

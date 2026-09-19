@@ -34,6 +34,66 @@ func TestRendererLeavesCursorAtPromptAfterStatus(t *testing.T) {
 	}
 }
 
+func TestRendererHidesComposerDuringDownloadPrompt(t *testing.T) {
+	var output bytes.Buffer
+	renderer := &renderer{output: &output, width: 80}
+	renderer.draw(&chatConsole{
+		status:  `Download to D:\report.pdf? [y/N/A always]`,
+		pending: &tgservice.RemoteFile{Name: "report.pdf"},
+	})
+
+	got := output.String()
+	if strings.Contains(got, "U> ") {
+		t.Fatalf("renderer showed composer during download prompt: %q", got)
+	}
+	if !strings.HasSuffix(got, "[y/N/A always]") {
+		t.Fatalf("cursor was not left at download prompt: %q", got)
+	}
+}
+
+func TestQueuedDownloadKeepsCurrentPrompt(t *testing.T) {
+	var output bytes.Buffer
+	console := &chatConsole{
+		pending:  &tgservice.RemoteFile{Name: "first.txt"},
+		status:   "Download to first.txt? [y/N/A always]",
+		renderer: &renderer{output: &output, width: 80},
+	}
+	console.handleTelegramEvent(tgservice.Event{File: &tgservice.RemoteFile{Name: "second.txt"}})
+
+	if got := console.status; got != "Download to first.txt? [y/N/A always]" {
+		t.Fatalf("active prompt changed to %q", got)
+	}
+	if len(console.downloadQueue) != 1 {
+		t.Fatalf("download queue length = %d, want 1", len(console.downloadQueue))
+	}
+}
+
+func TestQRToggleTemporarilyReplacesComposer(t *testing.T) {
+	var output bytes.Buffer
+	console := &chatConsole{qrCode: "QR-CODE"}
+	console.handleInput(inputEvent{kind: inputText, text: "r"})
+	if !console.showQR {
+		t.Fatal("r did not reveal QR code")
+	}
+	renderer := &renderer{output: &output, width: 80}
+	renderer.draw(console)
+	if got := output.String(); strings.Contains(got, "U> ") || !strings.Contains(got, "QR-CODE") || !strings.Contains(got, "r hide QR") {
+		t.Fatalf("unexpected QR rendering: %q", got)
+	}
+	console.handleInput(inputEvent{kind: inputText, text: "r"})
+	if console.showQR {
+		t.Fatal("r did not hide QR code")
+	}
+}
+
+func TestQRToggleDoesNotConsumeTextInDraft(t *testing.T) {
+	console := &chatConsole{qrCode: "QR-CODE", draft: []rune("hello"), cursor: 5}
+	console.handleInput(inputEvent{kind: inputText, text: "R"})
+	if console.showQR || string(console.draft) != "helloR" {
+		t.Fatalf("showQR=%v draft=%q", console.showQR, console.draft)
+	}
+}
+
 func TestOutgoingLineUsesOneSpaceBeforeAttachments(t *testing.T) {
 	attachment := selectedFile{Path: filepath.Join("folder", "report.pdf")}
 	tests := []struct {
@@ -54,6 +114,15 @@ func TestOutgoingLineUsesOneSpaceBeforeAttachments(t *testing.T) {
 				t.Fatalf("outgoingLine() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestIncomingLineUsesOneSpaceBeforeAttachments(t *testing.T) {
+	event := tgservice.Event{
+		Sender: "Browser", File: &tgservice.RemoteFile{Name: "report.pdf", Size: 1024},
+	}
+	if got, want := incomingLine(event), "R> [Browser] [report.pdf, 1.0 KiB]"; got != want {
+		t.Fatalf("incomingLine() = %q, want %q", got, want)
 	}
 }
 

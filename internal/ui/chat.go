@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/mdp/qrterminal/v3"
 	"golang.org/x/term"
 
 	tgservice "send-cli/internal/telegram"
@@ -21,6 +22,7 @@ const maxDraftRunes = 4096
 type Options struct {
 	Channel         string
 	Receiver        string
+	QRCode          string
 	AutoDownload    bool
 	SetAutoDownload func(bool) error
 }
@@ -52,10 +54,17 @@ func Run(ctx context.Context, session tgservice.Session, options Options) error 
 		results:      results,
 		renderer:     newRenderer(os.Stdout),
 	}
+	if value := strings.TrimSpace(options.QRCode); value != "" {
+		console.qrCode = terminalQRCode(value)
+	}
 
 	fmt.Fprint(os.Stdout, "\x1b[?2004h")
 	fmt.Fprintf(os.Stdout, "%s · %s · connected\r\n", safeTerminalText(channel), safeTerminalText(options.Receiver))
-	fmt.Fprint(os.Stdout, "Enter send · Shift+Enter/Ctrl+J/Ctrl+\\/Alt+Enter newline · Ctrl+O attach · Ctrl+C exit\r\n\r\n")
+	fmt.Fprint(os.Stdout, "Enter send · Shift+Enter/Ctrl+J/Ctrl+\\/Alt+Enter newline · Ctrl+O attach")
+	if console.qrCode != "" {
+		fmt.Fprint(os.Stdout, " · r QR")
+	}
+	fmt.Fprint(os.Stdout, " · Ctrl+C exit\r\n\r\n")
 	console.renderer.draw(console)
 	go readInput(runCtx, os.Stdin, keys)
 	events := session.Events()
@@ -116,6 +125,8 @@ type chatConsole struct {
 	collision     bool
 	renaming      bool
 	rename        []rune
+	qrCode        string
+	showQR        bool
 }
 
 type sendResult struct{ err error }
@@ -131,11 +142,22 @@ type autoDownloadResult struct{ err error }
 type transferProgressResult struct{ progress tgservice.TransferProgress }
 
 func (c *chatConsole) handleInput(key inputEvent) {
+	if c.showQR {
+		if key.kind == inputText && strings.EqualFold(key.text, "r") {
+			c.showQR = false
+		}
+		return
+	}
 	if c.pending != nil {
 		c.handleDownloadInput(key)
 		return
 	}
 	if c.sending {
+		return
+	}
+	if c.qrCode != "" && key.kind == inputText && strings.EqualFold(key.text, "r") && len(c.draft) == 0 && len(c.attachments) == 0 {
+		c.status = ""
+		c.showQR = true
 		return
 	}
 	switch key.kind {
@@ -263,24 +285,29 @@ func (c *chatConsole) handleTelegramEvent(event tgservice.Event) {
 		c.status = "Connection error: " + event.Err.Error()
 		return
 	}
-	line := "R> "
-	if event.Sender != "" {
-		line += "[" + event.Sender + "] "
-	}
-	line += event.Text
+	line := incomingLine(event)
 	if event.File != nil {
-		if line != "R> " {
-			line += " "
-		}
-		line += fmt.Sprintf("[%s, %s]", filepath.Base(event.File.Name), formatBytes(event.File.Size))
 		if c.pending == nil {
 			c.offerDownload(event.File)
 		} else {
 			c.downloadQueue = append(c.downloadQueue, event.File)
-			c.status = fmt.Sprintf("%s queued for download (%d waiting)", filepath.Base(event.File.Name), len(c.downloadQueue))
 		}
 	}
 	c.renderer.printLine(line)
+}
+
+func incomingLine(event tgservice.Event) string {
+	line := "R>"
+	if event.Sender != "" {
+		line += " [" + event.Sender + "]"
+	}
+	if event.Text != "" {
+		line += " " + event.Text
+	}
+	if event.File != nil {
+		line += fmt.Sprintf(" [%s, %s]", filepath.Base(event.File.Name), formatBytes(event.File.Size))
+	}
+	return line
 }
 
 func (c *chatConsole) handleResult(result any) {
@@ -573,10 +600,24 @@ func (r *renderer) clear() {
 
 func (r *renderer) draw(c *chatConsole) {
 	r.clear()
+	if c.showQR {
+		text := c.qrCode + "\nr hide QR"
+		fmt.Fprint(r.output, strings.ReplaceAll(text, "\n", "\r\n"))
+		r.lines = visualLines(text, r.width)
+		return
+	}
 	var block strings.Builder
 	if c.status != "" {
 		block.WriteString(c.status)
-		block.WriteString("\n")
+		if c.pending == nil {
+			block.WriteString("\n")
+		}
+	}
+	if c.pending != nil {
+		text := safeTerminalText(block.String())
+		fmt.Fprint(r.output, strings.ReplaceAll(text, "\n", "\r\n"))
+		r.lines = visualLines(text, r.width)
+		return
 	}
 	if len(c.attachments) > 0 {
 		block.WriteString("Attachments: ")
@@ -606,6 +647,12 @@ func (r *renderer) draw(c *chatConsole) {
 			fmt.Fprintf(r.output, "\x1b[%dC", cursorColumn)
 		}
 	}
+}
+
+func terminalQRCode(value string) string {
+	var output strings.Builder
+	qrterminal.GenerateHalfBlock(value, qrterminal.L, &output)
+	return strings.TrimRight(output.String(), "\r\n")
 }
 
 func (r *renderer) printLine(line string) {

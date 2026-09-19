@@ -16,11 +16,17 @@ type Config struct {
 	Version  int            `json:"version"`
 	Telegram TelegramConfig `json:"telegram"`
 	WhatsApp WhatsAppConfig `json:"whatsapp"`
+	HTTP     HTTPConfig     `json:"http"`
 }
 
 type WhatsAppConfig struct {
 	DefaultRecipient string `json:"default_recipient,omitempty"`
 	AutoDownload     bool   `json:"auto_download,omitempty"`
+}
+
+type HTTPConfig struct {
+	AutoDownload bool `json:"auto_download,omitempty"`
+	LastPort     int  `json:"last_port,omitempty"`
 }
 
 type TelegramConfig struct {
