@@ -1,10 +1,11 @@
 # send-cli
 
-`send` is a Windows-first command-line tool for sending and receiving Telegram
-messages and files with as little ceremony as possible.
+`send` is a Windows-first command-line tool for moving messages and files with
+as little ceremony as possible across Telegram, WhatsApp, HTTP, ADB, SSH, and
+local-network peers.
 
-Telegram, WhatsApp, HTTP, ADB, and SSH are implemented. LAN remains visible in
-`send --help` and `send list` while its peer-transfer backend is completed.
+Telegram, WhatsApp, HTTP, ADB, SSH, and authenticated LAN transfer are
+implemented.
 
 ## Commands
 
@@ -17,8 +18,20 @@ send http https://example.test/upload report.pdf -m "Monthly report"
 send adb report.pdf --to /sdcard/Download/
 send ssh user@example.com report.pdf --to /srv/drop/
 send wa report.pdf --to 15551234567 -m "Monthly report"
+send lan serve --directory .
+send lan report.pdf --to workstation --token RECEIVER_TOKEN
 send list
 ```
+
+## LAN
+
+Run `send lan serve` on the receiving machine. It advertises the peer over UDP,
+prints a generated transfer token, and atomically saves authenticated incoming
+files without overwriting collisions. Use `send lan --list` on the sender, then
+`send lan [files...] --to <peer> --token <token>`. Direct `host:port` targets and
+messages with `-m` are also supported. The protocol uses unencrypted HTTP and is
+intended only for trusted local networks; the token prevents unauthenticated
+uploads but does not provide transport confidentiality.
 
 ## WhatsApp
 

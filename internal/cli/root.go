@@ -22,6 +22,7 @@ import (
 	"send-cli/internal/adbchannel"
 	"send-cli/internal/config"
 	"send-cli/internal/httpchannel"
+	"send-cli/internal/lanchannel"
 	"send-cli/internal/lockfile"
 	"send-cli/internal/sshchannel"
 	tgservice "send-cli/internal/telegram"
@@ -50,25 +51,111 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newADBCommand())
 	root.AddCommand(newSSHCommand())
 	root.AddCommand(newWhatsAppCommand())
+	root.AddCommand(newLANCommand())
 	root.AddCommand(newListCommand())
-	for _, channel := range []struct {
-		name    string
-		aliases []string
-		summary string
-	}{
-		{name: "lan", summary: "Discover and send to peers on the LAN"},
-	} {
-		channel := channel
-		root.AddCommand(&cobra.Command{
-			Use:     channel.name,
-			Aliases: channel.aliases,
-			Short:   channel.summary + " (not implemented)",
-			RunE: func(*cobra.Command, []string) error {
-				return fmt.Errorf("%s support is not implemented yet", channel.name)
-			},
-		})
-	}
 	return root
+}
+
+func newLANCommand() *cobra.Command {
+	var message, target, token string
+	var list bool
+	var discoveryPort int
+	var discoveryTimeout, timeout time.Duration
+	command := &cobra.Command{
+		Use: "lan [files...]", Short: "Discover and send to send-cli peers on the LAN", Args: cobra.ArbitraryArgs,
+		RunE: func(command *cobra.Command, args []string) error {
+			if list {
+				peers, err := lanchannel.Discover(command.Context(), discoveryPort, discoveryTimeout)
+				if err != nil {
+					return err
+				}
+				if len(peers) == 0 {
+					fmt.Fprintln(command.OutOrStdout(), "No send-cli LAN peers found.")
+					return nil
+				}
+				for _, peer := range peers {
+					fmt.Fprintf(command.OutOrStdout(), "%s\t%s\tauth required\n", peer.Name, peer.URL)
+				}
+				return nil
+			}
+			endpoint, err := lanchannel.ResolveTarget(command.Context(), target, discoveryPort, discoveryTimeout)
+			if err != nil {
+				return err
+			}
+			if err := lanchannel.Send(command.Context(), endpoint, token, message, args, timeout); err != nil {
+				return err
+			}
+			fmt.Fprintf(command.OutOrStdout(), "Sent %d file(s) to %s.\n", len(args), target)
+			return nil
+		},
+	}
+	command.Flags().StringVarP(&message, "message", "m", "", "message sent with the transfer")
+	command.Flags().StringVar(&target, "to", "", "discovered peer name or host[:port]")
+	command.Flags().StringVar(&token, "token", os.Getenv("SEND_LAN_TOKEN"), "receiver token (or SEND_LAN_TOKEN)")
+	command.Flags().BoolVar(&list, "list", false, "discover and list send-cli peers")
+	command.Flags().IntVar(&discoveryPort, "discovery-port", lanchannel.DefaultDiscoveryPort, "UDP discovery port")
+	command.Flags().DurationVar(&discoveryTimeout, "discovery-timeout", time.Second, "LAN discovery duration")
+	command.Flags().DurationVar(&timeout, "timeout", 10*time.Minute, "transfer timeout")
+	command.AddCommand(newLANServeCommand())
+	return command
+}
+
+func newLANServeCommand() *cobra.Command {
+	var name, directory, address, token string
+	var port, discoveryPort int
+	command := &cobra.Command{
+		Use: "serve", Short: "Receive authenticated transfers from LAN peers", Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			if token == "" {
+				generated, err := randomHex(12)
+				if err != nil {
+					return err
+				}
+				token = generated
+			}
+			writer := command.OutOrStdout()
+			fmt.Fprintf(writer, "LAN receiver token: %s\n", token)
+			fmt.Fprintln(writer, "Share this token only with the sender. LAN traffic is not encrypted.")
+			receiver := &lanchannel.Receiver{
+				Directory: directory, Token: token,
+				OnMessage: func(message string) { fmt.Fprintf(writer, "R> %s\n", message) },
+				OnFiles: func(files []string) {
+					for _, file := range files {
+						fmt.Fprintf(writer, "Saved %s\n", file)
+					}
+				},
+			}
+			return lanchannel.Serve(command.Context(), lanchannel.ServeOptions{
+				Name: name, Address: address, Port: port, DiscoveryPort: discoveryPort, Receiver: receiver,
+				Ready: func(bound string) {
+					fmt.Fprintf(writer, "LAN receiver %s listening on %s. Press Ctrl+C to stop.\n", name, bound)
+				},
+			})
+		},
+	}
+	command.Flags().StringVar(&name, "name", defaultHostName(), "peer name advertised on the LAN")
+	command.Flags().StringVar(&directory, "directory", ".", "directory for received files")
+	command.Flags().StringVar(&address, "address", "0.0.0.0", "local address to bind")
+	command.Flags().StringVar(&token, "token", os.Getenv("SEND_LAN_TOKEN"), "receiver token; generated when omitted")
+	command.Flags().IntVar(&port, "port", lanchannel.DefaultTransferPort, "TCP transfer port")
+	command.Flags().IntVar(&discoveryPort, "discovery-port", lanchannel.DefaultDiscoveryPort, "UDP discovery port")
+	return command
+}
+
+func randomHex(bytesCount int) (string, error) {
+	value := make([]byte, bytesCount)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return strings.ToUpper(hex.EncodeToString(value)), nil
+}
+
+func defaultHostName() string {
+	name, err := os.Hostname()
+	if err != nil || strings.TrimSpace(name) == "" {
+		return "send-cli-peer"
+	}
+	return name
 }
 
 func newWhatsAppCommand() *cobra.Command {
@@ -404,7 +491,7 @@ func newListCommand() *cobra.Command {
 			fmt.Fprintln(table, "adb\t—\tready\tconnected device")
 			fmt.Fprintln(table, "ssh\t—\tready\tuser@host required")
 			fmt.Fprintln(table, "http\t—\tready\tURL required")
-			fmt.Fprintln(table, "lan\t—\tnot implemented\t—")
+			fmt.Fprintln(table, "lan\t—\tready\tdiscovery or --to")
 			return table.Flush()
 		},
 	}

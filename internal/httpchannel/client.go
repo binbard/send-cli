@@ -17,12 +17,13 @@ import (
 const maxErrorBody = 4 << 10
 
 type Request struct {
-	URL     string
-	Method  string
-	Message string
-	Files   []string
-	Headers []string
-	Timeout time.Duration
+	URL            string
+	Method         string
+	Message        string
+	Files          []string
+	Headers        []string
+	Timeout        time.Duration
+	ForceMultipart bool
 }
 
 type Result struct {
@@ -63,7 +64,7 @@ func Send(ctx context.Context, request Request) (Result, error) {
 		contentType string
 		writeResult <-chan error
 	)
-	if len(files) == 0 {
+	if len(files) == 0 && !request.ForceMultipart {
 		body = strings.NewReader(request.Message)
 		contentType = "text/plain; charset=utf-8"
 	} else {
