@@ -26,6 +26,7 @@ import (
 	"send-cli/internal/sshchannel"
 	tgservice "send-cli/internal/telegram"
 	"send-cli/internal/ui"
+	"send-cli/internal/whatsapp"
 )
 
 var version = "0.1.0"
@@ -48,13 +49,13 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newHTTPCommand())
 	root.AddCommand(newADBCommand())
 	root.AddCommand(newSSHCommand())
+	root.AddCommand(newWhatsAppCommand())
 	root.AddCommand(newListCommand())
 	for _, channel := range []struct {
 		name    string
 		aliases []string
 		summary string
 	}{
-		{name: "whatsapp", aliases: []string{"wa"}, summary: "Send with WhatsApp"},
 		{name: "lan", summary: "Discover and send to peers on the LAN"},
 	} {
 		channel := channel
@@ -68,6 +69,44 @@ func newRootCommand() *cobra.Command {
 		})
 	}
 	return root
+}
+
+func newWhatsAppCommand() *cobra.Command {
+	var (
+		message       string
+		recipient     string
+		token         string
+		phoneNumberID string
+		graphURL      string
+		apiVersion    string
+		timeout       time.Duration
+	)
+	command := &cobra.Command{
+		Use:     "whatsapp [files...]",
+		Aliases: []string{"wa"},
+		Short:   "Send with the WhatsApp Cloud API",
+		Args:    cobra.ArbitraryArgs,
+		RunE: func(command *cobra.Command, args []string) error {
+			client := whatsapp.NewClient(graphURL, apiVersion)
+			result, err := client.Send(command.Context(), whatsapp.Request{
+				Token: token, PhoneNumberID: phoneNumberID, Recipient: recipient,
+				Message: message, Files: args, Timeout: timeout,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(command.OutOrStdout(), "Sent %d WhatsApp message(s), including %d file(s), to %s.\n", result.Messages, result.Files, recipient)
+			return nil
+		},
+	}
+	command.Flags().StringVarP(&message, "message", "m", "", "message or first supported file caption")
+	command.Flags().StringVar(&recipient, "to", os.Getenv("SEND_WHATSAPP_TO"), "recipient phone number in international format")
+	command.Flags().StringVar(&token, "token", os.Getenv("SEND_WHATSAPP_TOKEN"), "Cloud API access token (prefer SEND_WHATSAPP_TOKEN)")
+	command.Flags().StringVar(&phoneNumberID, "phone-number-id", os.Getenv("SEND_WHATSAPP_PHONE_NUMBER_ID"), "Cloud API phone number ID")
+	command.Flags().StringVar(&graphURL, "graph-url", whatsapp.DefaultGraphURL, "Meta Graph API base URL")
+	command.Flags().StringVar(&apiVersion, "api-version", whatsapp.DefaultVersion, "Meta Graph API version")
+	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "overall request timeout")
+	return command
 }
 
 func newSSHCommand() *cobra.Command {
@@ -361,7 +400,7 @@ func newListCommand() *cobra.Command {
 			table := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
 			fmt.Fprintln(table, "CHANNEL\tALIASES\tSTATUS\tDEFAULT RECEIVER")
 			fmt.Fprintf(table, "telegram\ttg\t%s\t%s\n", status, receiver)
-			fmt.Fprintln(table, "whatsapp\twa\tnot implemented\t—")
+			fmt.Fprintln(table, "whatsapp\twa\tready\t--to required")
 			fmt.Fprintln(table, "adb\t—\tready\tconnected device")
 			fmt.Fprintln(table, "ssh\t—\tready\tuser@host required")
 			fmt.Fprintln(table, "http\t—\tready\tURL required")

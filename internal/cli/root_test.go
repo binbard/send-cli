@@ -54,3 +54,14 @@ func TestTelegramAliases(t *testing.T) {
 		t.Fatalf("tg resolved to %q", found.Name())
 	}
 }
+
+func TestWhatsAppAliases(t *testing.T) {
+	command := newRootCommand()
+	found, _, err := command.Find([]string{"wa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.Name() != "whatsapp" {
+		t.Fatalf("wa resolved to %q", found.Name())
+	}
+}

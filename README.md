@@ -3,8 +3,8 @@
 `send` is a Windows-first command-line tool for sending and receiving Telegram
 messages and files with as little ceremony as possible.
 
-Telegram, HTTP, ADB, and SSH are implemented. WhatsApp and LAN remain visible
-in `send --help` and `send list` while their backends are being completed.
+Telegram, WhatsApp, HTTP, ADB, and SSH are implemented. LAN remains visible in
+`send --help` and `send list` while its peer-transfer backend is completed.
 
 ## Commands
 
@@ -16,8 +16,18 @@ send tg
 send http https://example.test/upload report.pdf -m "Monthly report"
 send adb report.pdf --to /sdcard/Download/
 send ssh user@example.com report.pdf --to /srv/drop/
+send wa report.pdf --to 15551234567 -m "Monthly report"
 send list
 ```
+
+## WhatsApp
+
+`send whatsapp` (or `send wa`) uses Meta's official WhatsApp Cloud API. Set
+`SEND_WHATSAPP_TOKEN` and `SEND_WHATSAPP_PHONE_NUMBER_ID`, then provide `--to`.
+Text, JPEG/PNG images, MP4/3GPP video, supported audio, and common document
+formats are supported. Local files are uploaded first and then sent by media ID.
+The access token is never written to send-cli configuration or command output.
+Use `--api-version` or `--graph-url` to override the API endpoint.
 
 ## SSH
 
