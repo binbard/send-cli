@@ -21,6 +21,18 @@ func TestMediaMethod(t *testing.T) {
 	}
 }
 
+func TestMediaGroupCompatible(t *testing.T) {
+	if !mediaGroupCompatible([]string{"one.jpg", "two.mp4"}) {
+		t.Fatal("photo/video mix should be album-compatible")
+	}
+	if mediaGroupCompatible([]string{"one.jpg"}) {
+		t.Fatal("single file must not use an album")
+	}
+	if mediaGroupCompatible([]string{"one.jpg", "notes.txt"}) {
+		t.Fatal("document mix must fall back to sequential sending")
+	}
+}
+
 func TestValidateFilesRejectsOfficialBotAPISizeLimit(t *testing.T) {
 	tests := []struct {
 		name string

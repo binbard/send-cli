@@ -17,6 +17,10 @@ send tg
 send list
 ```
 
+Two or more compatible photos/videos are sent as Telegram media albums in
+ordered groups of up to 10. Documents and unsupported mixed batches are sent
+sequentially in their original order.
+
 `send tg` opens a lightweight line-oriented terminal chat without a full-screen
 TUI or animation framework:
 

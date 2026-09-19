@@ -69,6 +69,9 @@ func (s *botSession) Send(ctx context.Context, text string, files []string) erro
 		}
 		return s.client.sendMessage(ctx, s.chatID, text)
 	}
+	if mediaGroupCompatible(files) {
+		return s.sendMediaGroups(ctx, files, caption)
+	}
 	for i, path := range files {
 		fileCaption := ""
 		if i == 0 {
@@ -84,6 +87,38 @@ func (s *botSession) Send(ctx context.Context, text string, files []string) erro
 				err,
 			)
 		}
+	}
+	return nil
+}
+
+func (s *botSession) sendMediaGroups(ctx context.Context, files []string, caption string) error {
+	sent := 0
+	for sent < len(files) {
+		remaining := len(files) - sent
+		groupSize := min(remaining, 10)
+		group := files[sent : sent+groupSize]
+		groupCaption := ""
+		if sent == 0 {
+			groupCaption = caption
+		}
+
+		var err error
+		if len(group) == 1 {
+			err = s.client.sendFile(ctx, s.chatID, group[0], groupCaption)
+		} else {
+			err = s.client.sendMediaGroup(ctx, s.chatID, group, groupCaption)
+		}
+		if err != nil {
+			return fmt.Errorf(
+				"sent %d of %d files; media beginning with %s failed; %d not attempted: %w",
+				sent,
+				len(files),
+				filepath.Base(group[0]),
+				len(files)-sent,
+				err,
+			)
+		}
+		sent += len(group)
 	}
 	return nil
 }
@@ -497,6 +532,119 @@ func (c *botClient) sendFile(ctx context.Context, chatID int64, path, caption st
 	}
 }
 
+func (c *botClient) sendMediaGroup(ctx context.Context, chatID int64, paths []string, caption string) error {
+	for attempt := 0; ; attempt++ {
+		err := c.sendMediaGroupOnce(ctx, chatID, paths, caption)
+		if err == nil {
+			return nil
+		}
+		delay, retry := c.retryDelay(err, attempt)
+		if !retry || attempt+1 >= c.retryAttemptLimit() {
+			return err
+		}
+		if !waitForRetry(ctx, delay) {
+			return ctx.Err()
+		}
+	}
+}
+
+func (c *botClient) sendMediaGroupOnce(ctx context.Context, chatID int64, paths []string, caption string) error {
+	type inputMedia struct {
+		Type    string `json:"type"`
+		Media   string `json:"media"`
+		Caption string `json:"caption,omitempty"`
+	}
+
+	files := make([]*os.File, 0, len(paths))
+	media := make([]inputMedia, len(paths))
+	totals := make([]int64, len(paths))
+	for index, path := range paths {
+		file, err := os.Open(path)
+		if err != nil {
+			closeFiles(files)
+			return err
+		}
+		info, err := file.Stat()
+		if err != nil {
+			_ = file.Close()
+			closeFiles(files)
+			return err
+		}
+		if err := validateUploadSize(path, info.Size()); err != nil {
+			_ = file.Close()
+			closeFiles(files)
+			return err
+		}
+		files = append(files, file)
+		totals[index] = info.Size()
+		method, _ := mediaMethod(path)
+		mediaType := "photo"
+		if method == "sendVideo" {
+			mediaType = "video"
+		}
+		media[index] = inputMedia{Type: mediaType, Media: fmt.Sprintf("attach://file%d", index)}
+		if index == 0 {
+			media[index].Caption = caption
+		}
+	}
+	defer closeFiles(files)
+
+	mediaJSON, err := json.Marshal(media)
+	if err != nil {
+		return err
+	}
+	reader, pipe := io.Pipe()
+	writer := multipart.NewWriter(pipe)
+	writeResult := make(chan error, 1)
+	go func() {
+		writeErr := writer.WriteField("chat_id", strconv.FormatInt(chatID, 10))
+		if writeErr == nil {
+			writeErr = writer.WriteField("media", string(mediaJSON))
+		}
+		for index, file := range files {
+			if writeErr != nil {
+				break
+			}
+			var part io.Writer
+			part, writeErr = writer.CreateFormFile(fmt.Sprintf("file%d", index), filepath.Base(paths[index]))
+			if writeErr == nil {
+				upload := newProgressReader(ctx, file, TransferUpload, filepath.Base(paths[index]), totals[index])
+				_, writeErr = io.Copy(part, upload)
+			}
+		}
+		if closeErr := writer.Close(); writeErr == nil {
+			writeErr = closeErr
+		}
+		_ = pipe.CloseWithError(writeErr)
+		writeResult <- writeErr
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("sendMediaGroup"), reader)
+	if err != nil {
+		_ = reader.Close()
+		<-writeResult
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := c.http.Do(req)
+	if err != nil {
+		_ = reader.Close()
+		<-writeResult
+		return err
+	}
+	defer resp.Body.Close()
+	if err := <-writeResult; err != nil {
+		return err
+	}
+	return decodeBotResponse(resp)
+}
+
+func closeFiles(files []*os.File) {
+	for _, file := range files {
+		_ = file.Close()
+	}
+}
+
 func (c *botClient) sendFileOnce(ctx context.Context, chatID int64, path, caption string) error {
 	method, field := mediaMethod(path)
 	file, err := os.Open(path)
@@ -506,6 +654,9 @@ func (c *botClient) sendFileOnce(ctx context.Context, chatID int64, path, captio
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
+		return err
+	}
+	if err := validateUploadSize(path, info.Size()); err != nil {
 		return err
 	}
 	upload := newProgressReader(ctx, file, TransferUpload, filepath.Base(path), info.Size())
@@ -551,6 +702,10 @@ func (c *botClient) sendFileOnce(ctx context.Context, chatID int64, path, captio
 	if err := <-writeResult; err != nil {
 		return err
 	}
+	return decodeBotResponse(resp)
+}
+
+func decodeBotResponse(resp *http.Response) error {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return err

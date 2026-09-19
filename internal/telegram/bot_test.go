@@ -228,6 +228,73 @@ func TestBotSessionReportsPartialFileSend(t *testing.T) {
 	}
 }
 
+func TestBotSessionSendsPhotoAndVideoAlbum(t *testing.T) {
+	const token = "test-token"
+	var requests atomic.Int32
+	var gotMedia []map[string]string
+	var gotFiles []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path != "/bot"+token+"/sendMediaGroup" {
+			t.Errorf("path = %q, want sendMediaGroup", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := json.Unmarshal([]byte(r.FormValue("media")), &gotMedia); err != nil {
+			t.Error(err)
+		}
+		for _, field := range []string{"file0", "file1"} {
+			file, _, err := r.FormFile(field)
+			if err != nil {
+				t.Error(err)
+				continue
+			}
+			data, err := io.ReadAll(file)
+			_ = file.Close()
+			if err != nil {
+				t.Error(err)
+			}
+			gotFiles = append(gotFiles, string(data))
+		}
+		writeBotResponse(t, w, true, []map[string]any{{"message_id": 1}, {"message_id": 2}})
+	}))
+	defer server.Close()
+
+	client := newBotClient(token)
+	client.baseURL = server.URL
+	client.http = server.Client()
+	directory := t.TempDir()
+	photo := filepath.Join(directory, "photo.jpg")
+	video := filepath.Join(directory, "video.mp4")
+	if err := os.WriteFile(photo, []byte("photo-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(video, []byte("video-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	session := &botSession{client: client, chatID: 42, events: make(chan Event)}
+	if err := session.Send(context.Background(), "album caption", []string{photo, video}); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("requests = %d, want 1", requests.Load())
+	}
+	if len(gotMedia) != 2 || gotMedia[0]["type"] != "photo" || gotMedia[1]["type"] != "video" {
+		t.Fatalf("media = %#v", gotMedia)
+	}
+	if gotMedia[0]["caption"] != "album caption" || gotMedia[1]["caption"] != "" {
+		t.Fatalf("media captions = %#v", gotMedia)
+	}
+	if strings.Join(gotFiles, ",") != "photo-data,video-data" {
+		t.Fatalf("files = %#v", gotFiles)
+	}
+}
+
 func writeBotResponse(t *testing.T, writer http.ResponseWriter, ok bool, result any) {
 	t.Helper()
 	writer.Header().Set("Content-Type", "application/json")
