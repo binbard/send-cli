@@ -130,5 +130,5 @@ go build -trimpath -ldflags="-s -w" -o bin/send.exe ./cmd/send
 ```
 
 Push a tag such as `v0.1.0` to run the release workflow. It publishes stripped
-Windows, Linux, and macOS amd64 archives plus SHA-256 checksums; the tag version
-is embedded in `send --version`.
+Windows, Linux, and macOS archives for amd64 and arm64, each with the README,
+plus SHA-256 checksums. The tag version is embedded in `send --version`.

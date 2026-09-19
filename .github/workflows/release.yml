@@ -24,21 +24,31 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist package
+          mkdir -p dist
           version="${GITHUB_REF_NAME#v}"
           flags="-s -w -X send-cli/internal/cli.version=${version}"
 
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="$flags" -o package/send.exe ./cmd/send
-          (cd package && zip -q ../dist/send-${version}-windows-amd64.zip send.exe)
-          rm package/send.exe
+          for goos in windows linux darwin; do
+            for goarch in amd64 arm64; do
+              package="send-${version}-${goos}-${goarch}"
+              mkdir -p "$package"
+              binary="send"
+              if [ "$goos" = "windows" ]; then
+                binary="send.exe"
+              fi
 
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$flags" -o package/send ./cmd/send
-          tar -C package -czf "dist/send-${version}-linux-amd64.tar.gz" send
-          rm package/send
+              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+                go build -trimpath -ldflags="$flags" -o "$package/$binary" ./cmd/send
+              cp README.md "$package/README.md"
 
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="$flags" -o package/send ./cmd/send
-          tar -C package -czf "dist/send-${version}-darwin-amd64.tar.gz" send
-          rm package/send
+              if [ "$goos" = "windows" ]; then
+                zip -qr "dist/${package}.zip" "$package"
+              else
+                tar -czf "dist/${package}.tar.gz" "$package"
+              fi
+              rm -rf "$package"
+            done
+          done
 
           (cd dist && sha256sum *.zip *.tar.gz > checksums.txt)
       - name: Publish GitHub release

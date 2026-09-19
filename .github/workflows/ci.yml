@@ -30,15 +30,24 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [windows, linux, darwin]
+        goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: Cross-compile supported platforms
+      - name: Cross-compile ${{ matrix.goos }}/${{ matrix.goarch }}
         shell: bash
         run: |
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o send-windows-amd64.exe ./cmd/send
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o send-linux-amd64 ./cmd/send
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o send-darwin-amd64 ./cmd/send
+          suffix=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            suffix=".exe"
+          fi
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags="-s -w" \
+            -o "send-${{ matrix.goos }}-${{ matrix.goarch }}${suffix}" ./cmd/send
