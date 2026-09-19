@@ -19,12 +19,17 @@ import (
 const maxDraftRunes = 4096
 
 type Options struct {
+	Channel         string
 	Receiver        string
 	AutoDownload    bool
 	SetAutoDownload func(bool) error
 }
 
 func Run(ctx context.Context, session tgservice.Session, options Options) error {
+	channel := strings.TrimSpace(options.Channel)
+	if channel == "" {
+		channel = "Telegram"
+	}
 	restoreOutput, err := prepareTerminalOutput(os.Stdout)
 	if err != nil {
 		return fmt.Errorf("prepare terminal output: %w", err)
@@ -49,11 +54,11 @@ func Run(ctx context.Context, session tgservice.Session, options Options) error 
 	}
 
 	fmt.Fprint(os.Stdout, "\x1b[?2004h")
-	fmt.Fprintf(os.Stdout, "Telegram · %s · connected\r\n", safeTerminalText(options.Receiver))
+	fmt.Fprintf(os.Stdout, "%s · %s · connected\r\n", safeTerminalText(channel), safeTerminalText(options.Receiver))
 	fmt.Fprint(os.Stdout, "Enter send · Shift+Enter/Ctrl+J/Ctrl+\\/Alt+Enter newline · Ctrl+O attach · Ctrl+C exit\r\n\r\n")
 	console.renderer.draw(console)
 	go readInput(runCtx, os.Stdin, keys)
-	telegramEvents := session.Events()
+	events := session.Events()
 
 	defer func() {
 		cancel()
@@ -78,10 +83,10 @@ func Run(ctx context.Context, session tgservice.Session, options Options) error 
 				return fmt.Errorf("read terminal input: %w", key.err)
 			}
 			console.handleInput(key)
-		case event, ok := <-telegramEvents:
+		case event, ok := <-events:
 			if !ok {
-				console.status = "Telegram connection closed"
-				telegramEvents = nil
+				console.status = channel + " connection closed"
+				events = nil
 			} else {
 				console.handleTelegramEvent(event)
 			}
@@ -329,7 +334,10 @@ func (c *chatConsole) handleResult(result any) {
 }
 
 func (c *chatConsole) outgoingLine() string {
-	line := "U> " + string(c.draft)
+	line := "U>"
+	if text := strings.TrimSpace(string(c.draft)); text != "" {
+		line += " " + text
+	}
 	if len(c.attachments) > 0 {
 		labels := make([]string, len(c.attachments))
 		for index, file := range c.attachments {
@@ -337,7 +345,7 @@ func (c *chatConsole) outgoingLine() string {
 		}
 		line += " " + strings.Join(labels, " ")
 	}
-	return strings.TrimSpace(line)
+	return line
 }
 
 func (c *chatConsole) handleDownloadInput(key inputEvent) {

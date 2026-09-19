@@ -15,6 +15,12 @@ const currentVersion = 1
 type Config struct {
 	Version  int            `json:"version"`
 	Telegram TelegramConfig `json:"telegram"`
+	WhatsApp WhatsAppConfig `json:"whatsapp"`
+}
+
+type WhatsAppConfig struct {
+	DefaultRecipient string `json:"default_recipient,omitempty"`
+	AutoDownload     bool   `json:"auto_download,omitempty"`
 }
 
 type TelegramConfig struct {

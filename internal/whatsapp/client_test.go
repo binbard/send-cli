@@ -2,125 +2,146 @@ package whatsapp
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync/atomic"
 	"testing"
+
+	"go.mau.fi/whatsmeow"
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
+	waEvents "go.mau.fi/whatsmeow/types/events"
+	"google.golang.org/protobuf/proto"
 )
 
-func TestSendText(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v26.0/12345/messages" || r.Header.Get("Authorization") != "Bearer secret" {
-			t.Errorf("path=%q authorization=%q", r.URL.Path, r.Header.Get("Authorization"))
-		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Error(err)
-		}
-		if body["to"] != "15551234567" || body["type"] != "text" {
-			t.Errorf("body = %#v", body)
-		}
-		_, _ = w.Write([]byte(`{"messages":[{"id":"wamid.1"}]}`))
-	}))
-	defer server.Close()
-	client := NewClient(server.URL, DefaultVersion)
-	result, err := client.Send(context.Background(), Request{
-		Token: "secret", PhoneNumberID: "12345", Recipient: "+1 (555) 123-4567", Message: "hello",
-	})
+func TestOpenCreatesReusableSessionStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "whatsapp.db")
+	client, err := Open(context.Background(), path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Messages != 1 || result.Files != 0 {
-		t.Fatalf("result = %#v", result)
+	if client.Linked() {
+		t.Fatal("new session unexpectedly linked")
 	}
-}
-
-func TestSendUploadsAndSendsDocument(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "report.pdf")
-	if err := os.WriteFile(file, []byte("pdf-data"), 0o600); err != nil {
+	if err := client.Close(); err != nil {
 		t.Fatal(err)
 	}
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch calls.Add(1) {
-		case 1:
-			if r.URL.Path != "/v26.0/12345/media" {
-				t.Errorf("upload path = %q", r.URL.Path)
-			}
-			if err := r.ParseMultipartForm(1 << 20); err != nil {
-				t.Error(err)
-			}
-			if r.FormValue("messaging_product") != "whatsapp" || r.FormValue("type") != "application/pdf" {
-				t.Errorf("upload form = %#v", r.Form)
-			}
-			_, _ = w.Write([]byte(`{"id":"media-1"}`))
-		case 2:
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Error(err)
-			}
-			document := body["document"].(map[string]any)
-			if document["id"] != "media-1" || document["caption"] != "caption" || document["filename"] != "report.pdf" {
-				t.Errorf("document = %#v", document)
-			}
-			_, _ = w.Write([]byte(`{"messages":[{"id":"wamid.2"}]}`))
-		default:
-			t.Errorf("unexpected request %d", calls.Load())
-		}
-	}))
-	defer server.Close()
-	client := NewClient(server.URL, DefaultVersion)
-	result, err := client.Send(context.Background(), Request{
-		Token: "secret", PhoneNumberID: "12345", Recipient: "15551234567", Message: "caption", Files: []string{file},
-	})
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("session database missing: %v", err)
+	}
+	linked, err := IsLinked(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Files != 1 || result.Messages != 1 {
-		t.Fatalf("result = %#v", result)
+	if linked {
+		t.Fatal("empty session database unexpectedly linked")
 	}
 }
 
-func TestSendReportsMetaErrorWithoutToken(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":{"message":"recipient is invalid","type":"OAuthException","code":100}}`))
-	}))
-	defer server.Close()
-	client := NewClient(server.URL, DefaultVersion)
-	_, err := client.Send(context.Background(), Request{
-		Token: "very-secret", PhoneNumberID: "12345", Recipient: "1", Message: "hello",
-	})
-	if err == nil || !strings.Contains(err.Error(), "recipient is invalid") || strings.Contains(err.Error(), "very-secret") {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestClassifyMediaLimits(t *testing.T) {
+func TestClassifyMedia(t *testing.T) {
 	tests := []struct {
-		path      string
-		mediaType string
-		limitMiB  int64
+		path string
+		want whatsmeow.MediaType
 	}{
-		{"photo.jpg", "image", 5},
-		{"clip.mp4", "video", 16},
-		{"voice.ogg", "audio", 16},
-		{"report.pdf", "document", 100},
+		{"photo.jpg", whatsmeow.MediaImage},
+		{"clip.mp4", whatsmeow.MediaVideo},
+		{"voice.ogg", whatsmeow.MediaAudio},
+		{"report.pdf", whatsmeow.MediaDocument},
+		{"archive.zip", whatsmeow.MediaDocument},
 	}
 	for _, test := range tests {
-		mediaType, _, limit, err := classifyMedia(test.path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if mediaType != test.mediaType || limit != test.limitMiB*1024*1024 {
-			t.Errorf("classifyMedia(%q) = %q, %d", test.path, mediaType, limit)
+		got, mimeType := classifyMedia(test.path)
+		if got != test.want || mimeType == "" {
+			t.Errorf("classifyMedia(%q) = %q, %q", test.path, got, mimeType)
 		}
 	}
-	if _, _, _, err := classifyMedia("archive.zip"); err == nil {
-		t.Fatal("unsupported archive unexpectedly accepted")
+}
+
+func TestBuildMediaMessage(t *testing.T) {
+	upload := whatsmeow.UploadResponse{
+		URL: "https://example.test/media", DirectPath: "/media", MediaKey: []byte{1},
+		FileEncSHA256: []byte{2}, FileSHA256: []byte{3}, FileLength: 42,
+	}
+	image := buildMediaMessage(localMedia{path: "photo.jpg", mediaType: whatsmeow.MediaImage, mimeType: "image/jpeg"}, "caption", upload)
+	if image.GetImageMessage() == nil || image.GetImageMessage().GetCaption() != "caption" {
+		t.Fatalf("image message = %#v", image)
+	}
+	document := buildMediaMessage(localMedia{path: "report.pdf", mediaType: whatsmeow.MediaDocument, mimeType: "application/pdf"}, "", upload)
+	if document.GetDocumentMessage() == nil || document.GetDocumentMessage().GetFileName() != "report.pdf" {
+		t.Fatalf("document message = %#v", document)
+	}
+}
+
+func TestValidateFilesBeforeSending(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "archive.zip")
+	if err := os.WriteFile(path, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	files, err := validateFiles([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].mediaType != whatsmeow.MediaDocument {
+		t.Fatalf("files = %#v", files)
+	}
+	if _, err := validateFiles([]string{"missing.file"}); err == nil {
+		t.Fatal("missing file unexpectedly accepted")
+	}
+}
+
+func TestNormalizeRecipient(t *testing.T) {
+	if got := normalizeRecipient("+91 (98765) 43210"); got != "919876543210" {
+		t.Fatalf("normalized recipient = %q", got)
+	}
+	if digitsOnly("12x") {
+		t.Fatal("invalid recipient accepted")
+	}
+}
+
+func TestWhatsAppChatMatchesAlternativeJID(t *testing.T) {
+	target := types.NewJID("123456789", types.HiddenUserServer)
+	info := types.MessageInfo{MessageSource: types.MessageSource{
+		Chat:      types.NewJID("919876543210", types.DefaultUserServer),
+		SenderAlt: target,
+	}}
+	if !matchesChat(info, target) {
+		t.Fatal("chat did not match the sender's alternative JID")
+	}
+	if matchesChat(info, types.NewJID("999", types.HiddenUserServer)) {
+		t.Fatal("chat matched an unrelated JID")
+	}
+}
+
+func TestWhatsAppChatExtractsTextAndSafeDocumentName(t *testing.T) {
+	session := &chatSession{}
+	text, file := session.eventContent(&waEvents.Message{Message: &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String("hello")},
+	}})
+	if text != "hello" || file != nil {
+		t.Fatalf("text=%q file=%#v", text, file)
+	}
+
+	caption, file := session.eventContent(&waEvents.Message{
+		Info: types.MessageInfo{ID: "ABC123"},
+		Message: &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{
+			FileName: proto.String("../report.pdf"), Caption: proto.String("report"),
+			FileLength: proto.Uint64(42), Mimetype: proto.String("application/pdf"),
+		}},
+	})
+	if caption != "report" || file == nil || file.Name != "report.pdf" || file.Size != 42 {
+		t.Fatalf("caption=%q file=%#v", caption, file)
+	}
+}
+
+func TestContactDisplayNamePreference(t *testing.T) {
+	contact := types.ContactInfo{
+		FullName: "Saved Name", FirstName: "Saved", BusinessName: "Business", PushName: "Push",
+	}
+	if got := contactDisplayName(contact); got != "Saved Name" {
+		t.Fatalf("display name = %q", got)
+	}
+	contact.FullName = ""
+	contact.FirstName = ""
+	if got := contactDisplayName(contact); got != "Business" {
+		t.Fatalf("fallback display name = %q", got)
 	}
 }

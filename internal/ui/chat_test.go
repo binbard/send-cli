@@ -34,6 +34,29 @@ func TestRendererLeavesCursorAtPromptAfterStatus(t *testing.T) {
 	}
 }
 
+func TestOutgoingLineUsesOneSpaceBeforeAttachments(t *testing.T) {
+	attachment := selectedFile{Path: filepath.Join("folder", "report.pdf")}
+	tests := []struct {
+		name  string
+		draft string
+		want  string
+	}{
+		{name: "attachment only", want: "U> [report.pdf]"},
+		{name: "text and attachment", draft: "hello", want: "U> hello [report.pdf]"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			console := &chatConsole{
+				draft:       []rune(test.draft),
+				attachments: []selectedFile{attachment},
+			}
+			if got := console.outgoingLine(); got != test.want {
+				t.Fatalf("outgoingLine() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestPastedFiles(t *testing.T) {
 	first := filepath.Join(t.TempDir(), "first.txt")
 	second := filepath.Join(t.TempDir(), "second.txt")

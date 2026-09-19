@@ -3,14 +3,13 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	"send-cli/internal/config"
+	"send-cli/internal/whatsapp"
 )
 
 type doctorCheck struct {
@@ -35,7 +34,15 @@ func newDoctorCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			checks := doctorChecks(cfg, os.Getenv, exec.LookPath)
+			sessionPath, err := whatsapp.SessionPath()
+			if err != nil {
+				return err
+			}
+			whatsappLinked, err := whatsapp.IsLinked(command.Context(), sessionPath)
+			if err != nil {
+				return fmt.Errorf("inspect WhatsApp session: %w", err)
+			}
+			checks := doctorChecks(cfg, whatsappLinked, exec.LookPath)
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintln(writer, "CHANNEL\tSTATUS\tDETAIL")
 			allReady := true
@@ -58,7 +65,7 @@ func newDoctorCommand() *cobra.Command {
 
 func doctorChecks(
 	cfg config.Config,
-	getenv func(string) string,
+	whatsappLinked bool,
 	lookPath func(string) (string, error),
 ) []doctorCheck {
 	checks := make([]doctorCheck, 0, 6)
@@ -68,16 +75,10 @@ func doctorChecks(
 		checks = append(checks, doctorCheck{"telegram", false, "setup required", "run send tg --setup"})
 	}
 
-	missing := make([]string, 0, 2)
-	for _, name := range []string{"SEND_WHATSAPP_TOKEN", "SEND_WHATSAPP_PHONE_NUMBER_ID"} {
-		if strings.TrimSpace(getenv(name)) == "" {
-			missing = append(missing, name)
-		}
-	}
-	if len(missing) == 0 {
-		checks = append(checks, doctorCheck{"whatsapp", true, "ready", "Cloud API credentials found in environment"})
+	if whatsappLinked {
+		checks = append(checks, doctorCheck{"whatsapp", true, "ready", "linked user session"})
 	} else {
-		checks = append(checks, doctorCheck{"whatsapp", false, "credentials required", "set " + strings.Join(missing, " and ")})
+		checks = append(checks, doctorCheck{"whatsapp", false, "setup required", "run send wa --setup"})
 	}
 
 	checks = append(checks, executableCheck("adb", "adb", lookPath))

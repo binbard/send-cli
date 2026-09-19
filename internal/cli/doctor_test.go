@@ -13,13 +13,9 @@ func TestDoctorChecksReadinessWithoutExposingSecrets(t *testing.T) {
 		BotToken: "telegram-secret",
 		Receiver: config.Receiver{ID: 42, Title: "Team"},
 	}}
-	environment := map[string]string{
-		"SEND_WHATSAPP_TOKEN":           "whatsapp-secret",
-		"SEND_WHATSAPP_PHONE_NUMBER_ID": "12345",
-	}
 	checks := doctorChecks(
 		cfg,
-		func(name string) string { return environment[name] },
+		true,
 		func(name string) (string, error) { return "/tools/" + name, nil },
 	)
 	if len(checks) != 6 {
@@ -30,7 +26,7 @@ func TestDoctorChecksReadinessWithoutExposingSecrets(t *testing.T) {
 			t.Errorf("%s unexpectedly not ready: %#v", check.Channel, check)
 		}
 		text := check.Status + " " + check.Detail
-		if strings.Contains(text, "telegram-secret") || strings.Contains(text, "whatsapp-secret") {
+		if strings.Contains(text, "telegram-secret") {
 			t.Fatalf("%s check exposed a secret: %q", check.Channel, text)
 		}
 	}
@@ -39,7 +35,7 @@ func TestDoctorChecksReadinessWithoutExposingSecrets(t *testing.T) {
 func TestDoctorChecksReportMissingSetup(t *testing.T) {
 	checks := doctorChecks(
 		config.Config{},
-		func(string) string { return "" },
+		false,
 		func(string) (string, error) { return "", errors.New("missing") },
 	)
 	for _, channel := range []string{"telegram", "whatsapp", "adb", "ssh"} {

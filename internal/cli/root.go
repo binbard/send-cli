@@ -161,40 +161,184 @@ func defaultHostName() string {
 
 func newWhatsAppCommand() *cobra.Command {
 	var (
-		message       string
-		recipient     string
-		token         string
-		phoneNumberID string
-		graphURL      string
-		apiVersion    string
-		timeout       time.Duration
+		message      string
+		recipient    string
+		setup        bool
+		logout       bool
+		askDownloads bool
+		timeout      time.Duration
 	)
 	command := &cobra.Command{
 		Use:     "whatsapp [files...]",
 		Aliases: []string{"wa"},
-		Short:   "Send with the WhatsApp Cloud API",
-		Args:    cobra.ArbitraryArgs,
+		Short:   "Send with a linked WhatsApp user account",
+		Long: "Send messages and files through a linked WhatsApp user account. Running send wa without a message or files opens the interactive chat.\n\n" +
+			"After a successful send, the recipient is remembered as the default for the next send. " +
+			"Use --to to select and remember a different recipient. SEND_WHATSAPP_TO overrides the remembered default.",
+		Example: "  send wa --to +919876543210 -m \"hello\"\n" +
+			"  send wa\n" +
+			"  send wa -m \"uses the last successful recipient\"\n" +
+			"  send wa --to +919876543210 photo.jpg",
+		Args: cobra.ArbitraryArgs,
 		RunE: func(command *cobra.Command, args []string) error {
-			client := whatsapp.NewClient(graphURL, apiVersion)
+			sessionPath, err := whatsapp.SessionPath()
+			if err != nil {
+				return err
+			}
+			sessionLock, err := lockfile.Acquire(filepath.Join(filepath.Dir(sessionPath), "whatsapp.lock"))
+			if errors.Is(err, lockfile.ErrLocked) {
+				return errors.New("another send instance is using the WhatsApp session")
+			}
+			if err != nil {
+				return fmt.Errorf("protect WhatsApp session: %w", err)
+			}
+			defer sessionLock.Release()
+
+			if logout {
+				linked, err := whatsapp.IsLinked(command.Context(), sessionPath)
+				if err != nil {
+					return fmt.Errorf("inspect WhatsApp session: %w", err)
+				}
+				if !linked {
+					return errors.New("WhatsApp is not linked on this computer")
+				}
+			}
+			client, err := whatsapp.Open(command.Context(), sessionPath, command.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+			if logout {
+				if err := client.Logout(command.Context()); err != nil {
+					return err
+				}
+				fmt.Fprintln(command.OutOrStdout(), "WhatsApp device unlinked and local session removed.")
+				return nil
+			}
+
+			hasPayload := len(args) > 0 || command.Flags().Changed("message")
+			interactive := !hasPayload && !setup
+			if interactive && (!term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))) {
+				return errors.New("interactive mode requires a terminal; provide files or use -m")
+			}
+			if !client.Linked() && !term.IsTerminal(int(os.Stdout.Fd())) {
+				return errors.New("WhatsApp setup requires a terminal to display the QR code")
+			}
+			if setup || interactive {
+				if err := client.Connect(command.Context()); err != nil {
+					return err
+				}
+			}
+			if setup && !hasPayload {
+				if client.Linked() {
+					fmt.Fprintln(command.OutOrStdout(), "WhatsApp is linked and ready.")
+					return nil
+				}
+				return errors.New("WhatsApp setup did not complete")
+			}
+			store, err := config.NewStore()
+			if err != nil {
+				return err
+			}
+			recipient, err = whatsappRecipient(store, recipient)
+			if err != nil {
+				return err
+			}
+			if recipient == "" {
+				return errors.New("WhatsApp recipient is required; use --to once and it will be remembered")
+			}
+			if interactive {
+				cfg, err := store.Load()
+				if err != nil {
+					return err
+				}
+				if askDownloads {
+					cfg.WhatsApp.AutoDownload = false
+					if err := store.Save(cfg); err != nil {
+						return err
+					}
+				}
+				return client.Chat(command.Context(), recipient, func(session tgservice.Session, receiverLabel string) error {
+					session = &rememberingSession{
+						Session:       session,
+						remember:      func() error { return rememberWhatsAppRecipient(store, recipient) },
+						warningOutput: command.ErrOrStderr(),
+					}
+					return ui.Run(command.Context(), session, ui.Options{
+						Channel:      "WhatsApp",
+						Receiver:     receiverLabel,
+						AutoDownload: cfg.WhatsApp.AutoDownload,
+						SetAutoDownload: func(enabled bool) error {
+							return store.Update(func(latest *config.Config) error {
+								latest.WhatsApp.AutoDownload = enabled
+								return nil
+							})
+						},
+					})
+				})
+			}
+
 			result, err := client.Send(command.Context(), whatsapp.Request{
-				Token: token, PhoneNumberID: phoneNumberID, Recipient: recipient,
-				Message: message, Files: args, Timeout: timeout,
+				Recipient: recipient, Message: message, Files: args, Timeout: timeout,
 			})
 			if err != nil {
 				return err
+			}
+			if err := rememberWhatsAppRecipient(store, recipient); err != nil {
+				fmt.Fprintf(command.ErrOrStderr(), "warning: message was sent, but the WhatsApp recipient could not be remembered: %v\n", err)
 			}
 			fmt.Fprintf(command.OutOrStdout(), "Sent %d WhatsApp message(s), including %d file(s), to %s.\n", result.Messages, result.Files, recipient)
 			return nil
 		},
 	}
-	command.Flags().StringVarP(&message, "message", "m", "", "message or first supported file caption")
-	command.Flags().StringVar(&recipient, "to", os.Getenv("SEND_WHATSAPP_TO"), "recipient phone number in international format")
-	command.Flags().StringVar(&token, "token", os.Getenv("SEND_WHATSAPP_TOKEN"), "Cloud API access token (prefer SEND_WHATSAPP_TOKEN)")
-	command.Flags().StringVar(&phoneNumberID, "phone-number-id", os.Getenv("SEND_WHATSAPP_PHONE_NUMBER_ID"), "Cloud API phone number ID")
-	command.Flags().StringVar(&graphURL, "graph-url", whatsapp.DefaultGraphURL, "Meta Graph API base URL")
-	command.Flags().StringVar(&apiVersion, "api-version", whatsapp.DefaultVersion, "Meta Graph API version")
+	command.Flags().StringVarP(&message, "message", "m", "", "message or first file caption")
+	command.Flags().StringVar(&recipient, "to", os.Getenv("SEND_WHATSAPP_TO"), "recipient phone number; remembers the last successful recipient")
+	command.Flags().BoolVar(&setup, "setup", false, "link a WhatsApp account by QR code")
+	command.Flags().BoolVar(&logout, "logout", false, "unlink WhatsApp and remove the local session")
+	command.Flags().BoolVar(&askDownloads, "ask-downloads", false, "ask before downloading incoming files again")
 	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "overall request timeout")
+	command.MarkFlagsMutuallyExclusive("setup", "logout")
 	return command
+}
+
+type rememberingSession struct {
+	tgservice.Session
+	remember      func() error
+	warningOutput io.Writer
+}
+
+func (s *rememberingSession) Send(ctx context.Context, text string, files []string) error {
+	if err := s.Session.Send(ctx, text, files); err != nil {
+		return err
+	}
+	if s.remember != nil {
+		if err := s.remember(); err != nil {
+			fmt.Fprintf(s.warningOutput, "warning: message was sent, but the WhatsApp recipient could not be remembered: %v\n", err)
+		}
+	}
+	return nil
+}
+
+func whatsappRecipient(store *config.Store, supplied string) (string, error) {
+	if recipient := strings.TrimSpace(supplied); recipient != "" {
+		return recipient, nil
+	}
+	cfg, err := store.Load()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(cfg.WhatsApp.DefaultRecipient), nil
+}
+
+func rememberWhatsAppRecipient(store *config.Store, recipient string) error {
+	recipient = strings.TrimSpace(recipient)
+	if recipient == "" {
+		return nil
+	}
+	return store.Update(func(cfg *config.Config) error {
+		cfg.WhatsApp.DefaultRecipient = recipient
+		return nil
+	})
 }
 
 func newSSHCommand() *cobra.Command {
@@ -392,6 +536,7 @@ func newTelegramCommand() *cobra.Command {
 			defer receiverLock.Release()
 			return service.Run(command.Context(), true, func(session tgservice.Session) error {
 				return ui.Run(command.Context(), session, ui.Options{
+					Channel:      "Telegram",
 					Receiver:     receiverName(cfg.Telegram.Receiver),
 					AutoDownload: cfg.Telegram.AutoDownload,
 					SetAutoDownload: func(enabled bool) error {
@@ -484,11 +629,27 @@ func newListCommand() *cobra.Command {
 				status = "ready (bot)"
 				receiver = receiverName(cfg.Telegram.Receiver)
 			}
+			whatsappStatus := "not linked"
+			whatsappReceiver := strings.TrimSpace(cfg.WhatsApp.DefaultRecipient)
+			if whatsappReceiver == "" {
+				whatsappReceiver = "--to required"
+			}
+			sessionPath, err := whatsapp.SessionPath()
+			if err != nil {
+				return err
+			}
+			whatsappLinked, err := whatsapp.IsLinked(command.Context(), sessionPath)
+			if err != nil {
+				return fmt.Errorf("inspect WhatsApp session: %w", err)
+			}
+			if whatsappLinked {
+				whatsappStatus = "ready (user)"
+			}
 			writer := command.OutOrStdout()
 			table := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
 			fmt.Fprintln(table, "CHANNEL\tALIASES\tSTATUS\tDEFAULT RECEIVER")
 			fmt.Fprintf(table, "telegram\ttg\t%s\t%s\n", status, receiver)
-			fmt.Fprintln(table, "whatsapp\twa\tready\t--to required")
+			fmt.Fprintf(table, "whatsapp\twa\t%s\t%s\n", whatsappStatus, whatsappReceiver)
 			fmt.Fprintln(table, "adb\t—\tready\tconnected device")
 			fmt.Fprintln(table, "ssh\t—\tready\tuser@host required")
 			fmt.Fprintln(table, "http\t—\tready\tURL required")

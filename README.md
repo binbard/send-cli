@@ -17,7 +17,9 @@ send tg
 send http https://example.test/upload report.pdf -m "Monthly report"
 send adb report.pdf --to /sdcard/Download/
 send ssh user@example.com report.pdf --to /srv/drop/
+send wa --setup
 send wa report.pdf --to 15551234567 -m "Monthly report"
+send wa --logout
 send lan serve --directory .
 send lan report.pdf --to workstation --token RECEIVER_TOKEN
 send list
@@ -25,9 +27,9 @@ send doctor
 ```
 
 `send doctor` reports Telegram and WhatsApp setup, checks whether `adb` and
-`scp` are available, and confirms the built-in HTTP and LAN channels. It never
-prints access tokens. Use `send doctor --strict` in setup scripts when missing
-credentials or dependencies should produce a failure exit code.
+`scp` are available, and confirms the built-in HTTP and LAN channels. Use
+`send doctor --strict` in setup scripts when missing sessions or dependencies
+should produce a failure exit code.
 
 ## LAN
 
@@ -41,12 +43,25 @@ uploads but does not provide transport confidentiality.
 
 ## WhatsApp
 
-`send whatsapp` (or `send wa`) uses Meta's official WhatsApp Cloud API. Set
-`SEND_WHATSAPP_TOKEN` and `SEND_WHATSAPP_PHONE_NUMBER_ID`, then provide `--to`.
-Text, JPEG/PNG images, MP4/3GPP video, supported audio, and common document
-formats are supported. Local files are uploaded first and then sent by media ID.
-The access token is never written to send-cli configuration or command output.
-Use `--api-version` or `--graph-url` to override the API endpoint.
+`send whatsapp` (or `send wa`) links a normal WhatsApp user account through
+WhatsApp's multi-device protocol using `whatsmeow`; it does not use the Facebook
+Cloud API. Run `send wa --setup`, then scan the terminal QR code from WhatsApp's
+**Settings > Linked devices > Link a device** screen. The linked-device session
+is reused automatically and stored as `whatsapp.db` beneath the OS user
+configuration directory. Run `send wa --logout` to unlink the device and remove
+that local session.
+
+Use an international phone number with `--to`. Text, images, video, audio, and
+arbitrary documents are supported, and a message supplied with files becomes
+the first compatible file's caption. After a successful send, that recipient is
+remembered and `--to` can be omitted on later sends. `SEND_WHATSAPP_TO` overrides
+the remembered recipient when set.
+
+Running `send wa` without a message or files opens the same terminal chat
+interface as Telegram, scoped to the remembered recipient. Incoming messages
+and media from that conversation appear while the command is running.
+`whatsmeow` is an unofficial WhatsApp Web protocol client, so server changes or
+account policy enforcement may affect it without notice.
 
 ## SSH
 
@@ -128,7 +143,7 @@ tokens are migrated the next time the configuration is saved. `send tg
 
 ## Build and test
 
-Go 1.24 or newer is required.
+Go 1.26 or newer is required.
 
 ```powershell
 go test ./...
