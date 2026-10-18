@@ -21,6 +21,8 @@ send ssh user@example.com report.pdf --to /srv/drop/
 send wa --setup
 send wa report.pdf --to 15551234567 -m "Monthly report"
 send wa --logout
+send device offer
+send device join 192.168.1.20:49152
 send lan serve --directory .
 send lan report.pdf --to workstation --token RECEIVER_TOKEN
 send list
@@ -63,6 +65,29 @@ interface as Telegram, scoped to the remembered recipient. Incoming messages
 and media from that conversation appear while the command is running.
 `whatsmeow` is an unofficial WhatsApp Web protocol client, so server changes or
 account policy enforcement may affect it without notice.
+
+## Provision another device
+
+On a configured device, run `send device offer`. On the new device, run the
+`send device join <host:port>` command it prints, then enter the pairing code
+when prompted. Keep both commands running until they finish. The 22-character
+code expires after five minutes and works once. Use `send device offer --bind <address>
+--port <port>` if you need a specific network interface or firewall port.
+
+Provisioning transfers the Telegram bot token and receiver, the linked
+WhatsApp session (when present), and its remembered recipient. A fresh
+WhatsApp database snapshot is made while other `send` processes are excluded
+from using that session. The pairing code authenticates the request and
+encrypts the transfer; it is never sent over the network. The new device stores
+the imported token under its own OS user protection. An existing Telegram or
+WhatsApp setup on the new device is never overwritten.
+
+The transferred WhatsApp session has the **same linked-device identity** as the
+source. Use it on only one computer at a time. Even then, message and key state
+can diverge between the copies, and WhatsApp may require relinking. Telegram
+bots also have a shared receive queue, so use
+interactive `send tg` on only one device at a time. One-shot sends can be made
+from any provisioned device.
 
 ## SSH
 

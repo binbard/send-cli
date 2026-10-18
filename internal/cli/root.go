@@ -54,6 +54,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newLANCommand())
 	root.AddCommand(newListCommand())
 	root.AddCommand(newDoctorCommand())
+	root.AddCommand(newDeviceCommand())
 	return root
 }
 

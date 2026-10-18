@@ -19,7 +19,7 @@ func TestHelpIncludesAllChannels(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"telegram", "whatsapp", "adb", "ssh", "http", "lan", "doctor"} {
+	for _, name := range []string{"telegram", "whatsapp", "adb", "ssh", "http", "lan", "doctor", "device"} {
 		if !strings.Contains(output.String(), name) {
 			t.Errorf("help does not mention %q", name)
 		}
