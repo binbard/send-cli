@@ -14,3 +14,9 @@ build:
 
 dist:
     go run ./cmd/build dist
+
+demo: build
+    go run ./cmd/demo render
+
+demo-live: build
+    go run ./cmd/demo render --live

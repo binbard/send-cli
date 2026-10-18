@@ -4,8 +4,28 @@
 as little ceremony as possible across Telegram, WhatsApp, HTTP, ADB, SSH, and
 local-network peers.
 
+![Animated demo of send listing channels and sending through Telegram and WhatsApp](docs/demo.gif)
+
 Telegram, WhatsApp, HTTP, ADB, SSH, and authenticated LAN transfer are
 implemented.
+
+## Install and update
+
+On Windows, install through [Scoop](https://scoop.sh):
+
+```powershell
+scoop bucket add binbard https://github.com/binbard/scoop-binbard
+scoop install binbard/send
+```
+
+Use `scoop update send` for updates or `scoop uninstall send` to remove it.
+
+The [download page](https://send-cli.binbard.org/#download) has install and
+uninstall scripts for Windows, macOS, Linux, and Termux. Download and run the
+install script again to update to the latest release. The scripts verify the
+release archive against its published SHA-256 checksum. Uninstalling removes
+the script-managed binary and PATH entry, while keeping provider settings.
+The scripts need a published versioned release to work.
 
 ## Commands
 
@@ -196,6 +216,8 @@ Go 1.26 or newer and `just` are required for these recipes.
 just check
 just build
 just dist
+just demo
+just demo-live
 ```
 
 `just build` targets the current machine: `bin/send.exe` on Windows and
@@ -205,6 +227,22 @@ arm64, then puts final packages in `dist/`. That directory contains only
 compressed archives named `send-<commit>-<os>-<arch>`; each archive contains
 only `send` or `send.exe` at its root.
 
-Push a tag such as `v0.1.0` to run the release workflow. It publishes the same
+On Windows, macOS, or Linux, `just demo` uses
+[VHS](https://github.com/charmbracelet/vhs) and `ffmpeg` to render
+`docs/demo.gif` and extract `docs/screenshot.png` for the website preview.
+It replays the checked-in, redacted real CLI output in `docs/demo-output.json`,
+so it never sends a message. `just demo-live` refreshes that output on a
+configured device: it sends `README.md` to the saved Telegram receiver and one
+demo text to the saved WhatsApp recipient. The capture masks recipient numbers
+and `@usernames`; the remaining scenes use an isolated configuration and a
+loopback HTTP share.
+
+Push a version tag such as `v0.1.1` to run the release workflow. It publishes the same
 six binary-only archives, named with the tag version, plus SHA-256 checksums.
 The tag version is embedded in `send --version`.
+
+## Website
+
+The static product page lives in `docs/index.html` and is published from
+`master`/`docs` at [send-cli.binbard.org](https://send-cli.binbard.org/).
+`docs/CNAME` sets the custom domain.
