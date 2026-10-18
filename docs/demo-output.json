@@ -1,0 +1,5 @@
+{
+    "list":  "CHANNEL   ALIASES  STATUS        DEFAULT RECEIVER\ntelegram  tg       ready (bot)   The One (@***)\nwhatsapp  wa       ready (user)  ***\nadb       —        ready         connected device\nssh       —        ready         user@host required\nhttp      —        ready         private LAN web share\nlan       —        ready         discovery or --to\n",
+    "telegram":  "Sent 1 file(s) to The One (@***).\n",
+    "whatsapp":  "Sent 1 WhatsApp message(s), including 0 file(s), to ***.\n"
+}

@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101719">
+  <meta name="description" content="send is a command-line tool for sending messages and files through Telegram, WhatsApp, HTTP, LAN, ADB, and SSH. One command, wherever it needs to go.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="send — one command, wherever it needs to go">
+  <meta property="og:description" content="Move messages and files through Telegram, WhatsApp, HTTP, LAN, ADB, and SSH from your terminal.">
+  <meta property="og:image" content="https://send-cli.binbard.org/screenshot.png">
+  <meta property="og:url" content="https://send-cli.binbard.org/">
+  <link rel="canonical" href="https://send-cli.binbard.org/">
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <link rel="stylesheet" href="./styles.css">
+  <script defer src="./app.js"></script>
+  <title>send — one command, wherever it needs to go</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="site-shell">
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="send home">
+        <span class="brand-mark" aria-hidden="true"><span>&gt;</span><span>_</span></span>
+        <span>send<span class="brand-suffix">/cli</span></span>
+      </a>
+      <nav class="site-nav" aria-label="Main navigation">
+        <a href="#demo">Demo</a>
+        <a href="#channels">Channels</a>
+        <a href="#provision">Device setup</a>
+        <a href="#quickstart">Quick start</a>
+      </nav>
+      <details class="mobile-menu">
+        <summary>Menu <span aria-hidden="true">☰</span></summary>
+        <nav aria-label="Mobile navigation"><a href="#demo">Demo</a><a href="#channels">Channels</a><a href="#provision">Device setup</a><a href="#quickstart">Quick start</a><a href="#download">Download</a></nav>
+      </details>
+      <a class="header-link" href="https://github.com/binbard/send-cli" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+    </header>
+
+    <main id="main">
+      <section class="hero section-wrap" id="top" aria-labelledby="hero-title">
+        <div class="hero-glow" aria-hidden="true"></div>
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="eyebrow-dot"></span> The terminal is your send button</p>
+          <h1 id="hero-title">One command.<br><em>Wherever it needs to go.</em></h1>
+          <p class="hero-description">Send a file, drop a message, open a browser share, or reach another machine. <strong>send</strong> puts six destinations behind one familiar command.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#download">Get send <span aria-hidden="true">↗</span></a>
+            <a class="button button-quiet" href="#demo">Watch the demo <span aria-hidden="true">↓</span></a>
+          </div>
+          <div class="hero-meta" aria-label="Product highlights">
+            <span><i aria-hidden="true"></i> Windows · macOS · Linux · Termux</span>
+            <span><i aria-hidden="true"></i> No send account to create</span>
+          </div>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <span class="orbit orbit-one"></span><span class="orbit orbit-two"></span>
+          <span class="hero-art-caption">FROM YOUR TERMINAL</span>
+          <div class="route route-a"><span class="route-icon">TG</span><span>Telegram</span><b>↗</b></div>
+          <div class="route route-b"><span class="route-icon">WA</span><span>WhatsApp</span><b>↗</b></div>
+          <div class="route route-c"><span class="route-icon">↔</span><span>Local devices</span><b>↗</b></div>
+          <div class="route-core"><span class="route-prompt">&gt;</span><span>send<span class="route-cursor">_</span></span></div>
+          <span class="hero-art-foot">ONE ENTRY POINT&nbsp; / &nbsp;SIX WAYS OUT</span>
+        </div>
+      </section>
+
+      <section class="ticker" aria-label="Supported channels">
+        <div class="ticker-inner"><span>TELEGRAM</span><b>✳</b><span>WHATSAPP</span><b>✳</b><span>HTTP SHARE</span><b>✳</b><span>LOCAL NETWORK</span><b>✳</b><span>ADB</span><b>✳</b><span>SSH</span></div>
+      </section>
+
+      <section class="demo-section section-wrap" id="demo" aria-labelledby="demo-title">
+        <div class="section-heading">
+          <div><p class="eyebrow">01 / IN MOTION</p><h2 id="demo-title">See the actual CLI.</h2></div>
+          <p>The recording runs real <code>send</code> commands. Only the recipient number and username are masked.</p>
+        </div>
+        <div class="demo-frame">
+          <div class="frame-top"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>send — terminal walkthrough</span><span class="frame-tag">REAL OUTPUT</span></div>
+          <img src="./demo.gif" alt="Terminal demo: send list, send a Telegram file, send a WhatsApp message, start an HTTP share, and view device provisioning help" width="1120" height="700" loading="lazy">
+        </div>
+        <div class="demo-caption"><span>01 <strong>Check channels</strong></span><span>02 <strong>Send files & messages</strong></span><span>03 <strong>Share locally</strong></span><span>04 <strong>Move your setup</strong></span></div>
+      </section>
+
+      <section class="commands-section section-wrap" aria-labelledby="commands-title">
+        <div class="section-heading">
+          <div><p class="eyebrow">02 / SHORT COMMANDS</p><h2 id="commands-title">Type less. Send more.</h2></div>
+          <p>Choose a destination. Your message or file follows the same pattern every time.</p>
+        </div>
+        <div class="command-workbench">
+          <div class="command-tabs" role="tablist" aria-label="Command examples">
+            <button class="command-tab is-active" id="tab-telegram" type="button" role="tab" aria-selected="true" aria-controls="command-panel" data-example="telegram">Telegram <span>01</span></button>
+            <button class="command-tab" id="tab-whatsapp" type="button" role="tab" aria-selected="false" aria-controls="command-panel" data-example="whatsapp" tabindex="-1">WhatsApp <span>02</span></button>
+            <button class="command-tab" id="tab-http" type="button" role="tab" aria-selected="false" aria-controls="command-panel" data-example="http" tabindex="-1">HTTP share <span>03</span></button>
+            <button class="command-tab" id="tab-ssh" type="button" role="tab" aria-selected="false" aria-controls="command-panel" data-example="ssh" tabindex="-1">SSH <span>04</span></button>
+          </div>
+          <div class="command-panel" id="command-panel" role="tabpanel" aria-labelledby="tab-telegram" tabindex="0">
+            <div class="panel-kicker"><span class="live-dot"></span><span id="command-label">SEND A FILE TO YOUR TELEGRAM CHAT</span><button type="button" class="copy-button" id="copy-command" aria-label="Copy command">Copy <span aria-hidden="true">↗</span></button></div>
+            <pre><code><span class="prompt">$</span> <span id="command-text">send tg report.pdf</span></code></pre>
+            <p id="command-description">Use your configured bot and remembered receiver. Send several files in one command, or add <code>-m</code> for a message.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="channels-section section-wrap" id="channels" aria-labelledby="channels-title">
+        <div class="section-heading">
+          <div><p class="eyebrow">03 / ONE TOOL, MANY ROUTES</p><h2 id="channels-title">Pick the right path.</h2></div>
+          <p>Chat apps, nearby devices, and remote machines. Use the channel that fits the moment.</p>
+        </div>
+        <div class="channel-grid">
+          <article class="channel-card"><div class="channel-icon icon-tg">↗</div><span class="channel-number">01 / CHAT</span><h3>Telegram</h3><p>Send messages, photos, and files to your configured bot conversation. Open a terminal chat when you need to stay in the loop.</p><code>send tg report.pdf</code></article>
+          <article class="channel-card"><div class="channel-icon icon-wa">●</div><span class="channel-number">02 / CHAT</span><h3>WhatsApp</h3><p>Link your account with a QR code, then message or send files to a remembered recipient.</p><code>send wa -m "On my way"</code></article>
+          <article class="channel-card"><div class="channel-icon icon-http">◎</div><span class="channel-number">03 / BROWSER</span><h3>HTTP share</h3><p>Open a temporary browser share for downloads, messages, and uploads on your local network.</p><code>send http report.pdf</code></article>
+          <article class="channel-card"><div class="channel-icon icon-lan">↔</div><span class="channel-number">04 / PEER</span><h3>Local network</h3><p>Discover another <strong>send</strong> receiver and transfer files with its receiver token.</p><code>send lan --list</code></article>
+          <article class="channel-card"><div class="channel-icon icon-adb">⌁</div><span class="channel-number">05 / DEVICE</span><h3>Android / ADB</h3><p>Push files to an authorized Android device, straight into its Downloads folder.</p><code>send adb report.pdf</code></article>
+          <article class="channel-card"><div class="channel-icon icon-ssh">&gt;_</div><span class="channel-number">06 / REMOTE</span><h3>SSH</h3><p>Move files to a server using your installed OpenSSH client and existing keys.</p><code>send ssh user@host report.pdf</code></article>
+        </div>
+      </section>
+
+      <section class="provision-section section-wrap" id="provision" aria-labelledby="provision-title">
+        <div class="provision-copy">
+          <p class="eyebrow">04 / YOUR DEVICES, CONNECTED</p>
+          <h2 id="provision-title">A new device.<br><em>Already feels like yours.</em></h2>
+          <p>Transfer your Telegram setup and an existing WhatsApp linked session from a configured computer over a one-time encrypted local connection. No authentication files to copy by hand.</p>
+        </div>
+        <div class="provision-steps">
+          <div class="provision-step"><span>01</span><div><h3>Offer from your configured device</h3><code>send device offer</code></div></div>
+          <div class="provision-step"><span>02</span><div><h3>Join from the new device</h3><code>send device join &lt;host:port&gt;</code></div></div>
+          <div class="provision-step"><span>03</span><div><h3>Enter the one-time pairing code</h3><p>The code stays off the network and expires after five minutes by default.</p></div></div>
+          <p class="provision-note"><span aria-hidden="true">ⓘ</span> A transferred WhatsApp session is a copy of one linked identity. Use it on only one computer at a time; either copy may later require relinking.</p>
+        </div>
+      </section>
+
+      <section class="quickstart-section section-wrap" id="quickstart" aria-labelledby="quickstart-title">
+        <div class="section-heading"><div><p class="eyebrow">05 / GET GOING</p><h2 id="quickstart-title">From install to done.</h2></div><p>Start with a channel you already use. Add more when you need them.</p></div>
+        <ol class="quickstart-grid">
+          <li><span class="step-index">01</span><h3>Install</h3><p>Use Scoop on Windows or the install script for your platform below.</p><code>send doctor</code></li>
+          <li><span class="step-index">02</span><h3>Connect a channel</h3><p>Set up your Telegram bot or link WhatsApp from your phone. The CLI walks you through it.</p><code>send tg --setup</code></li>
+          <li><span class="step-index">03</span><h3>Send something</h3><p>Once a receiver is remembered, you can send with a short command.</p><code>send tg report.pdf</code></li>
+        </ol>
+      </section>
+
+      <section class="download-section section-wrap" id="download" aria-labelledby="download-title">
+        <div class="download-head"><div><p class="eyebrow">06 / TAKE IT WITH YOU</p><h2 id="download-title">Ready when you are.</h2><p>Install with Scoop on Windows, or use a platform script to install and update. Scripts verify release checksums, and uninstalling keeps your provider settings.</p></div><a class="download-version" id="release-version" href="https://github.com/binbard/send-cli/releases" target="_blank" rel="noopener noreferrer">Browse releases ↗</a></div>
+        <div class="download-grid">
+          <article class="download-card">
+            <div class="os-icon" aria-hidden="true">▦</div><h3>Windows</h3><p>PowerShell · x64 and ARM64</p>
+            <div class="script-guide"><strong>Install with Scoop</strong><pre><code>scoop bucket add binbard https://github.com/binbard/scoop-binbard
+scoop install binbard/send</code></pre>
+            <p class="package-note">Then use <code>scoop update send</code> to update or <code>scoop uninstall send</code> to remove it.</p>
+            <strong>Or install with PowerShell</strong><pre><code>iwr https://send-cli.binbard.org/install.ps1 -OutFile install.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1</code></pre>
+            <strong>Uninstall the script install</strong><pre><code>iwr https://send-cli.binbard.org/uninstall.ps1 -OutFile uninstall.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1</code></pre></div>
+            <div class="download-links"><a data-os="windows" data-arch="amd64" href="https://github.com/binbard/send-cli/releases" target="_blank" rel="noopener noreferrer">Browse x64 archive <span aria-hidden="true">↗</span></a><a data-os="windows" data-arch="arm64" href="https://github.com/binbard/send-cli/releases" target="_blank" rel="noopener noreferrer">Browse ARM64 archive <span aria-hidden="true">↗</span></a></div>
+          </article>
+          <article class="download-card">
+            <div class="os-icon" aria-hidden="true">⌘</div><h3>macOS</h3><p>Apple silicon and Intel</p>
+            <div class="script-guide"><strong>Install or update</strong><pre><code>curl -fsSLO https://send-cli.binbard.org/install.sh
+sh install.sh</code></pre>
+            <strong>Uninstall</strong><pre><code>curl -fsSLO https://send-cli.binbard.org/uninstall.sh
+sh uninstall.sh</code></pre></div>
+            <div class="download-links"><a data-os="darwin" data-arch="arm64" href="https://github.com/binbard/send-cli/releases" target="_blank" rel="noopener noreferrer">Browse Apple silicon archive <span aria-hidden="true">↗</span></a><a data-os="darwin" data-arch="amd64" href="https://github.com/binbard/send-cli/releases" target="_blank" rel="noopener noreferrer">Browse Intel archive <span aria-hidden="true">↗</span></a></div>
+          </article>
+          <article class="download-card">
+            <div class="os-icon" aria-hidden="true">&gt;_</div><h3>Linux</h3><p>x64 and ARM64</p>
+            <div class="script-guide"><strong>Install or update</strong><pre><code>curl -fsSLO https://send-cli.binbard.org/install.sh
+sh install.sh</code></pre>
+            <strong>Uninstall</strong><pre><code>curl -fsSLO https://send-cli.binbard.org/uninstall.sh
+sh uninstall.sh</code></pre></div>
+            <div class="download-links"><a data-os="linux" data-arch="amd64" href="https://github.com/binbard/send-cli/releases" target="_blank" rel="noopener noreferrer">Browse x64 archive <span aria-hidden="true">↗</span></a><a data-os="linux" data-arch="arm64" href="https://github.com/binbard/send-cli/releases" target="_blank" rel="noopener noreferrer">Browse ARM64 archive <span aria-hidden="true">↗</span></a></div>
+          </article>
+          <article class="download-card">
+            <div class="os-icon" aria-hidden="true">◇</div><h3>Termux</h3><p>Android ARM64 · uses the Linux ARM64 build</p>
+            <div class="script-guide"><strong>Install or update</strong><pre><code>curl -fsSLO https://send-cli.binbard.org/install.sh
+sh install.sh</code></pre>
+            <strong>Uninstall</strong><pre><code>curl -fsSLO https://send-cli.binbard.org/uninstall.sh
+sh uninstall.sh</code></pre></div>
+            <div class="download-links"><a data-os="linux" data-arch="arm64" href="https://github.com/binbard/send-cli/releases" target="_blank" rel="noopener noreferrer">Browse ARM64 archive <span aria-hidden="true">↗</span></a></div>
+          </article>
+        </div>
+        <div class="download-foot"><a href="https://github.com/binbard/send-cli/releases" target="_blank" rel="noopener noreferrer">Browse all releases ↗</a><a href="https://github.com/binbard/send-cli#build-and-test" target="_blank" rel="noopener noreferrer">Build from source ↗</a></div>
+      </section>
+    </main>
+
+    <footer class="site-footer section-wrap">
+      <div><a class="brand footer-brand" href="#top"><span class="brand-mark" aria-hidden="true"><span>&gt;</span><span>_</span></span><span>send<span class="brand-suffix">/cli</span></span></a><p>One command, wherever it needs to go.</p></div>
+      <div class="footer-links"><a href="https://github.com/binbard/send-cli" target="_blank" rel="noopener noreferrer">Source ↗</a><a href="https://github.com/binbard/send-cli#commands" target="_blank" rel="noopener noreferrer">Docs ↗</a><a href="https://github.com/binbard/send-cli/releases" target="_blank" rel="noopener noreferrer">Releases ↗</a></div>
+      <p class="footer-note">HTTP shares and LAN transfers are intended for trusted local networks. <span>© <span id="year">2026</span> send-cli.</span></p>
+    </footer>
+  </div>
+  <div class="sr-only" role="status" aria-live="polite" id="copy-status"></div>
+</body>
+</html>
