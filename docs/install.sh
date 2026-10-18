@@ -113,3 +113,4 @@ fi
 
 printf 'Installed send %s to %s\n' "$version" "$binary"
 printf 'Run this script again to update.\n'
+printf 'Optional tab completion: send completion install bash (or zsh/fish).\n'

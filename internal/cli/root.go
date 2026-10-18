@@ -55,6 +55,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newListCommand())
 	root.AddCommand(newDoctorCommand())
 	root.AddCommand(newDeviceCommand())
+	addCompletionCommands(root)
 	return root
 }
 

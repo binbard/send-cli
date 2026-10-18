@@ -107,6 +107,7 @@ try {
     @{ Installer = 'send-cli'; PathAdded = $pathAdded } | ConvertTo-Json -Compress | Set-Content -LiteralPath $marker -Encoding UTF8
     Write-Host "Installed send $version to $binary"
     Write-Host 'Run this script again to update.'
+    Write-Host 'Optional tab completion: send completion install powershell (or cmd with Clink).'
 } finally {
     if (Test-Path -LiteralPath $stagedBinary) { Remove-Item -LiteralPath $stagedBinary -Force }
     if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force }

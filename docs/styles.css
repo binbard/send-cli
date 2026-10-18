@@ -177,6 +177,9 @@ h2 { font-size: clamp(42px, 4.1vw, 61px); line-height: 1.05; letter-spacing: -.0
 .download-links a { display: flex; align-items: center; justify-content: space-between; background: #1d2b24; border: 1px solid #1d2b24; border-radius: 7px; padding: 11px 13px; color: #eff5e8; font-size: 12px; font-weight: 700; transition: background .2s ease, color .2s ease; }
 .download-links a:hover { background: var(--lime); border-color: #8fca49; color: #14201c; }
 .download-foot { display: flex; gap: 26px; margin-top: 26px; }
+.completion-note { color: #425849; font-size: 14px; line-height: 1.7; margin: 24px 0 0; }
+.completion-note code { color: #274330; font-weight: 700; }
+.completion-note a { color: #274330; text-decoration: underline; }
 .download-foot a { color: #425849; font-size: 13px; font-weight: 700; border-bottom: 1px solid #9aaf91; padding-bottom: 4px; }
 .download-foot a:hover { color: #15251b; border-color: #15251b; }
 

@@ -27,6 +27,27 @@ release archive against its published SHA-256 checksum. Uninstalling removes
 the script-managed binary and PATH entry, while keeping provider settings.
 The scripts need a published versioned release to work.
 
+## Shell completion
+
+Tab completion is optional. Install it for the shell you use, then open a new
+shell:
+
+```text
+send completion install bash        # Bash, including Termux
+send completion install zsh         # Zsh
+send completion install fish        # Fish
+send completion install powershell  # Windows PowerShell or PowerShell 7
+send completion install cmd         # cmd.exe with Clink installed
+```
+
+The install scripts do not change shell startup files for completion. The
+explicit command above adds a managed shell profile entry where needed; Fish
+uses its standard completion directory, and Clink loads a registered Lua
+script. Use `send completion uninstall <shell>` to remove it. You can also use
+`send completion <shell>` to print a script for manual setup. Plain `cmd.exe`
+does not provide programmable completion, so the `cmd` option requires
+[Clink](https://github.com/chrisant996/clink).
+
 ## Commands
 
 ```powershell
