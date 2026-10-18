@@ -30,7 +30,8 @@ if [ -z "$termux_prefix" ]; then
 fi
 case "$termux_prefix" in */com.termux/files/usr) termux_detected=1 ;; *) termux_detected=0 ;; esac
 if [ -n "${TERMUX_VERSION:-}${TERMUX__PREFIX:-}" ] || [ "$termux_detected" = 1 ]; then
-  [ "$platform" = linux ] && [ -n "$termux_prefix" ] || fail 'invalid Termux environment'
+  [ "$platform" = linux ] && [ "$arch" = arm64 ] && [ -n "$termux_prefix" ] || fail 'Termux requires Android ARM64'
+  platform=android
   install_dir="$termux_prefix/bin"
 else
   install_dir="$HOME/.local/bin"

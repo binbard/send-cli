@@ -22,6 +22,7 @@ var targets = []target{
 	{"windows", "amd64"}, {"windows", "arm64"},
 	{"linux", "amd64"}, {"linux", "arm64"},
 	{"darwin", "amd64"}, {"darwin", "arm64"},
+	{"android", "arm64"},
 }
 
 func main() {

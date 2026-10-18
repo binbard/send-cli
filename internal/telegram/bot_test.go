@@ -81,6 +81,20 @@ func TestBotSendAndDownload(t *testing.T) {
 	}
 }
 
+func TestBotNetworkErrorRedactsToken(t *testing.T) {
+	const token = "123:test-secret"
+	client := newBotClient(token)
+	client.baseURL = "http://127.0.0.1:0"
+	client.retryAttempts = 1
+	err := client.sendMessage(context.Background(), 42, "hello")
+	if err == nil {
+		t.Fatal("expected a network error")
+	}
+	if strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("network error did not redact bot token: %v", err)
+	}
+}
+
 func TestBotRetriesTelegramRateLimit(t *testing.T) {
 	const token = "test-token"
 	var requests atomic.Int32

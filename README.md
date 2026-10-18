@@ -222,9 +222,10 @@ just demo-live
 
 `just build` targets the current machine: `bin/send.exe` on Windows and
 `bin/send` on Linux or macOS. `build/` holds temporary build files. `just dist`
-cross-compiles Windows, Linux, and macOS for amd64 and
-arm64, then puts final packages in `dist/`. That directory contains only
-compressed archives named `send-<commit>-<os>-<arch>`; each archive contains
+cross-compiles Windows, Linux, and macOS for amd64 and arm64, plus Android
+for arm64, then puts final packages in `dist/`. Termux uses the Android
+archive so DNS, TLS, and Android system calls work correctly. `dist/` contains
+only compressed archives named `send-<commit>-<os>-<arch>`; each archive contains
 only `send` or `send.exe` at its root.
 
 On Windows, macOS, or Linux, `just demo` uses
@@ -238,7 +239,7 @@ and `@usernames`; the remaining scenes use an isolated configuration and a
 loopback HTTP share.
 
 Push a version tag such as `v0.1.1` to run the release workflow. It publishes the same
-six binary-only archives, named with the tag version, plus SHA-256 checksums.
+seven binary-only archives, named with the tag version, plus SHA-256 checksums.
 The tag version is embedded in `send --version`.
 
 ## Website

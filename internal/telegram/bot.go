@@ -416,6 +416,28 @@ func (c *botClient) endpoint(method string) string {
 	return c.baseURL + "/bot" + c.token + "/" + method
 }
 
+type redactedRequestError struct {
+	cause error
+	token string
+}
+
+func (e redactedRequestError) Error() string {
+	if e.token == "" {
+		return e.cause.Error()
+	}
+	return strings.ReplaceAll(e.cause.Error(), e.token, "[redacted]")
+}
+
+func (e redactedRequestError) Unwrap() error { return e.cause }
+
+func (c *botClient) do(req *http.Request) (*http.Response, error) {
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, redactedRequestError{cause: err, token: c.token}
+	}
+	return resp, nil
+}
+
 func (c *botClient) doForm(ctx context.Context, method string, values url.Values, out any) error {
 	for attempt := 0; ; attempt++ {
 		err := c.doFormOnce(ctx, method, values, out)
@@ -438,7 +460,7 @@ func (c *botClient) doFormOnce(ctx context.Context, method string, values url.Va
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -679,7 +701,7 @@ func (c *botClient) sendMediaGroupOnce(ctx context.Context, chatID int64, paths 
 		return err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		_ = reader.Close()
 		<-writeResult
@@ -745,7 +767,7 @@ func (c *botClient) sendFileOnce(ctx context.Context, chatID int64, path, captio
 		return err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		_ = reader.Close()
 		<-writeResult
@@ -860,7 +882,7 @@ func (c *botClient) downloadOnce(ctx context.Context, downloadURL, destination s
 	if err != nil {
 		return err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
