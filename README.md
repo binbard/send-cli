@@ -20,7 +20,7 @@ scoop install binbard/send
 
 Use `scoop update send` for updates or `scoop uninstall send` to remove it.
 
-The [download page](https://send-cli.binbard.org/#download) has install and
+The [download page](https://send.binbard.org/#download) has install and
 uninstall scripts for Windows, macOS, Linux, and Termux. Download and run the
 install script again to update to the latest release. The scripts verify the
 release archive against its published SHA-256 checksum. Uninstalling removes
@@ -244,5 +244,5 @@ The tag version is embedded in `send --version`.
 ## Website
 
 The static product page lives in `docs/index.html` and is published from
-`master`/`docs` at [send-cli.binbard.org](https://send-cli.binbard.org/).
+`master`/`docs` at [send.binbard.org](https://send.binbard.org/).
 `docs/CNAME` sets the custom domain.
