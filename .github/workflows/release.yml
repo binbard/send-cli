@@ -24,34 +24,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
           version="${GITHUB_REF_NAME#v}"
-          flags="-s -w -X send-cli/internal/cli.version=${version}"
-
-          for goos in windows linux darwin; do
-            for goarch in amd64 arm64; do
-              package="send-${version}-${goos}-${goarch}"
-              mkdir -p "$package"
-              binary="send"
-              if [ "$goos" = "windows" ]; then
-                binary="send.exe"
-              fi
-
-              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-                go build -trimpath -ldflags="$flags" -o "$package/$binary" ./cmd/send
-              cp README.md "$package/README.md"
-
-              if [ "$goos" = "windows" ]; then
-                zip -qr "dist/${package}.zip" "$package"
-              else
-                tar -czf "dist/${package}.tar.gz" "$package"
-              fi
-              rm -rf "$package"
-            done
-          done
-
-          (cd dist && sha256sum *.zip *.tar.gz > checksums.txt)
+          SEND_BUILD_VERSION="$version" SEND_BUILD_LABEL="$version" go run ./cmd/build dist
+          (cd dist && sha256sum *.zip *.tar.gz > ../build/checksums.txt)
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/* build/checksums.txt --verify-tag --generate-notes

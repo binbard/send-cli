@@ -190,13 +190,21 @@ tokens are migrated the next time the configuration is saved. `send tg
 
 ## Build and test
 
-Go 1.26 or newer is required.
+Go 1.26 or newer and `just` are required for these recipes.
 
 ```powershell
-go test ./...
-go build -trimpath -ldflags="-s -w" -o bin/send.exe ./cmd/send
+just check
+just build
+just dist
 ```
 
-Push a tag such as `v0.1.0` to run the release workflow. It publishes stripped
-Windows, Linux, and macOS archives for amd64 and arm64, each with the README,
-plus SHA-256 checksums. The tag version is embedded in `send --version`.
+`just build` targets the current machine: `bin/send.exe` on Windows and
+`bin/send` on Linux or macOS. `build/` holds temporary build files. `just dist`
+cross-compiles Windows, Linux, and macOS for amd64 and
+arm64, then puts final packages in `dist/`. That directory contains only
+compressed archives named `send-<commit>-<os>-<arch>`; each archive contains
+only `send` or `send.exe` at its root.
+
+Push a tag such as `v0.1.0` to run the release workflow. It publishes the same
+six binary-only archives, named with the tag version, plus SHA-256 checksums.
+The tag version is embedded in `send --version`.
